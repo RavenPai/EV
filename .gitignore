@@ -3,6 +3,11 @@ dist
 .env
 .env.local
 supabase/.temp/
+robot-pi/.venv/
+robot-pi/__pycache__/
+robot-pi/*.py[cod]
+robot-pi/commands.db
+robot-pi/mission_request.json
 .DS_Store
 *.log
 *.tsbuildinfo
