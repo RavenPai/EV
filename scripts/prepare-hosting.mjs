@@ -7,7 +7,6 @@ await cp(".openai/hosting.json", "dist/.openai/hosting.json");
 await cp("dist/index.html", "dist/client/index.html");
 await cp("dist/assets", "dist/client/assets", { recursive: true });
 await cp("dist/robot-mark.svg", "dist/client/robot-mark.svg");
-await cp("dist/_redirects", "dist/client/_redirects");
 
 const worker = `
 export default {

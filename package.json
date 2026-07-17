@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build && node scripts/prepare-hosting.mjs",
+    "build:vite": "tsc -b && vite build",
+    "build": "npm run build:vite && node scripts/prepare-hosting.mjs",
+    "build:cloudflare": "npm run build:vite",
+    "deploy:cloudflare": "npm run build:cloudflare && wrangler deploy",
     "preview": "vite preview",
     "check": "tsc -b --pretty false",
     "test": "vitest run"
@@ -27,6 +30,7 @@
     "supabase": "^2.109.1",
     "typescript": "~5.7.2",
     "vite": "^6.0.5",
-    "vitest": "^3.2.7"
+    "vitest": "^3.2.7",
+    "wrangler": "^4.111.0"
   }
 }

@@ -8,6 +8,9 @@ robot-pi/__pycache__/
 robot-pi/*.py[cod]
 robot-pi/commands.db
 robot-pi/mission_request.json
+.wrangler/
+.dev.vars
+.dev.vars.*
 .DS_Store
 *.log
 *.tsbuildinfo

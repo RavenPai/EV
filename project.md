@@ -955,7 +955,6 @@ EV/
 ├── .openai/
 │   └── hosting.json
 ├── public/
-│   ├── _redirects
 │   └── robot-mark.svg
 ├── robot-pi/
 │   ├── agent.py
@@ -1009,7 +1008,8 @@ EV/
 ├── tsconfig.json
 ├── tsconfig.node.json
 ├── vite.config.ts
-└── vitest.config.ts
+├── vitest.config.ts
+└── wrangler.jsonc
 ```
 
 ## 18. File-by-file responsibility
@@ -1074,10 +1074,10 @@ EV/
 
 | File | Responsibility |
 |---|---|
-| `public/_redirects` | SPA fallback rule |
 | `public/robot-mark.svg` | Application logo/favicon |
 | `.openai/hosting.json` | Existing hosting project association |
 | `scripts/prepare-hosting.mjs` | Produces client/server packaging and a GET fallback worker |
+| `wrangler.jsonc` | Cloudflare static asset directory and SPA fallback configuration |
 
 ## 19. Development commands
 
@@ -1181,14 +1181,16 @@ The standard root build also retains:
 - `dist/index.html`.
 - `dist/assets/`.
 - `dist/robot-mark.svg`.
-- `dist/_redirects`.
 
-For a Git-based static host:
+For Cloudflare:
 
 ```text
-Build command: npm run build
+Build command: npm run build:cloudflare
 Output directory: dist
 ```
+
+`wrangler.jsonc` points Cloudflare at `dist` and enables
+`single-page-application` fallback behavior without a `_redirects` rule.
 
 Production hosting must define the same three frontend variables used locally:
 
@@ -1361,4 +1363,3 @@ A cloud-to-robot deployment should not be considered complete until:
 - ESP32 heartbeat loss stops motor output.
 - Hardware E-stop behavior is verified physically.
 - Logs contain enough evidence to reconstruct the mission without exposing secrets.
-

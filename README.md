@@ -101,11 +101,12 @@ For Cloudflare Pages:
 
 1. Push this folder to GitHub or GitLab.
 2. Create a Pages project from the repository.
-3. Build command: `npm run build`.
+3. Build command: `npm run build:cloudflare`.
 4. Output directory: `dist`.
 5. Add the three `VITE_*` variables in the Pages project settings.
 
-The included `public/_redirects` file enables React Router refreshes on Pages.
+The included `wrangler.jsonc` configures Cloudflare static assets to serve
+`index.html` for React Router navigation requests.
 
 ## Safety boundary
 
