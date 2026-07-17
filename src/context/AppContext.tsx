@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { initialDeliveries, initialNotifications, initialRobots } from "../data/demo";
+import { createId } from "../lib/id";
 import { cloudEnabled, supabase } from "../lib/supabase";
 import type { Delivery, DeliveryStatus, NewDeliveryInput, NotificationItem, Robot, UserRole } from "../types";
 
@@ -77,7 +78,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [toast, setToast] = useState<Toast>();
 
   const showToast = useCallback((message: string, tone: Toast["tone"] = "success") => {
-    setToast({ id: crypto.randomUUID(), message, tone });
+    setToast({ id: createId(), message, tone });
   }, []);
 
   const refreshCloud = useCallback(async () => {
@@ -141,7 +142,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const trackingCode = `MIIT-${sequence}`;
     const now = new Date().toISOString();
     const newDelivery: Delivery = {
-      id: crypto.randomUUID(), trackingCode, requesterName: "Demo User", requesterEmail: "user@miit.edu.mm",
+      id: createId(), trackingCode, requesterName: "Demo User", requesterEmail: "user@miit.edu.mm",
       ...input, status: "REQUESTED", createdAt: now, updatedAt: now, progress: 5, etaMinutes: 18,
     };
     if (cloudEnabled && supabase) {
@@ -150,7 +151,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
         requester_id: authData.user?.id ?? null,
         requester_name: newDelivery.requesterName,
         requester_email: newDelivery.requesterEmail,
-        tracking_code: trackingCode,
         recipient_name: input.recipientName,
         recipient_phone: input.recipientPhone,
         source_id: input.sourceId,
@@ -160,14 +160,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
         weight_kg: input.weightKg,
         priority: input.priority,
         notes: input.notes,
-      }).select("id").single();
+      }).select("id, tracking_code").single();
       if (error) throw error;
       await refreshCloud();
-      showToast(`${trackingCode} was submitted for approval.`);
+      showToast(`${data.tracking_code} was submitted for approval.`);
       return String(data.id);
     }
     setDeliveries((items) => [newDelivery, ...items]);
-    setNotifications((items) => [{ id: crypto.randomUUID(), title: "Delivery request created", message: `${trackingCode} is waiting for approval.`, time: now, read: false, type: "info" }, ...items]);
+    setNotifications((items) => [{ id: createId(), title: "Delivery request created", message: `${trackingCode} is waiting for approval.`, time: now, read: false, type: "info" }, ...items]);
     showToast(`${trackingCode} was submitted for approval.`);
     return newDelivery.id;
   };
