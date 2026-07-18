@@ -3,6 +3,7 @@ import { AlertTriangle, ArrowRight, Bot, Check, Clock3, PackageCheck, RadioTower
 import { StatusPill } from "../components/StatusPill";
 import { useApp } from "../context/AppContext";
 import { getLocation } from "../data/demo";
+import { cloudEnabled } from "../lib/supabase";
 import type { Delivery } from "../types";
 
 export function Dispatch() {
@@ -22,6 +23,7 @@ export function Dispatch() {
     if (delivery.status === "REQUESTED") return { label: "Approve request", action: () => approveDelivery(delivery.id), icon: Check };
     if (delivery.status === "APPROVED") return { label: "Assign selected robot", action: () => assignDelivery(delivery.id, robotChoice), icon: Bot };
     if (delivery.status === "ASSIGNED") return { label: "Dispatch mission", action: () => dispatchDelivery(delivery.id), icon: RadioTower };
+    if (cloudEnabled) return undefined;
     return { label: "Advance demo checkpoint", action: () => advanceDelivery(delivery.id), icon: ArrowRight };
   };
   const action = selected ? nextAction(selected) : undefined;
@@ -74,6 +76,7 @@ export function Dispatch() {
               })}
             </div>
             <div className="dispatch-safety-note"><AlertTriangle size={17} /><p>Dispatch sends a mission-level command. The Raspberry Pi plans movement locally; the web app never streams motor directions.</p></div>
+            {cloudEnabled && selected.status === "DISPATCHED" && <div className="dispatch-safety-note"><RadioTower size={17} /><p>Command published. Waiting for the Raspberry Pi to acknowledge it and publish <code>MISSION_STARTED</code>.</p></div>}
             <div className="dispatch-actions">
               {["REQUESTED", "APPROVED"].includes(selected.status) && <button className="button button-danger-outline" onClick={() => void run(() => cancelDelivery(selected.id))}><X size={16} />Reject</button>}
               {action && <button className="button button-primary button-large" disabled={busy} onClick={() => void run(action.action)}><action.icon size={18} />{busy ? "Working…" : action.label}</button>}

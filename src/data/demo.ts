@@ -60,7 +60,7 @@ export const initialNotifications: NotificationItem[] = [
 ];
 
 export const statusOrder = [
-  "REQUESTED", "APPROVED", "ASSIGNED", "TO_SOURCE", "AT_SOURCE", "PACKAGE_LOADED",
+  "REQUESTED", "APPROVED", "ASSIGNED", "DISPATCHED", "TO_SOURCE", "AT_SOURCE", "PACKAGE_LOADED",
   "TO_DESTINATION", "AT_DESTINATION", "DELIVERED", "RETURNING", "COMPLETED",
 ] as const;
 

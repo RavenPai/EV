@@ -2,7 +2,7 @@ import { Check, Circle } from "lucide-react";
 import { statusOrder, formatStatus } from "../data/demo";
 import type { DeliveryStatus } from "../types";
 
-const displaySteps: DeliveryStatus[] = ["REQUESTED", "ASSIGNED", "TO_SOURCE", "PACKAGE_LOADED", "TO_DESTINATION", "DELIVERED", "COMPLETED"];
+const displaySteps: DeliveryStatus[] = ["REQUESTED", "ASSIGNED", "DISPATCHED", "TO_SOURCE", "PACKAGE_LOADED", "TO_DESTINATION", "DELIVERED", "COMPLETED"];
 
 export function DeliveryTimeline({ status, compact = false }: { status: DeliveryStatus; compact?: boolean }) {
   const currentIndex = statusOrder.indexOf(status as (typeof statusOrder)[number]);

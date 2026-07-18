@@ -11,6 +11,7 @@ A working React + TypeScript MVP for the MIIT autonomous EV delivery project. It
 - Local demo mode persisted in browser storage.
 - Optional Supabase Auth/PostgreSQL/Realtime data mode.
 - EMQX REST-to-MQTT Edge Function with expiring, auditable commands.
+- Authenticated EMQX-to-Supabase ingestion for acknowledgements, state, events and presence.
 - Raspberry Pi MQTT bridge with TLS, idempotency, expiry validation and ESP32 STOP forwarding.
 
 ## Run the application
@@ -54,12 +55,19 @@ Never put the Supabase service-role key or EMQX credentials in a `VITE_*` variab
 npx supabase secrets set \
   EMQX_API_URL=https://YOUR-EMQX-HOST:8443 \
   EMQX_API_KEY=YOUR_API_KEY \
-  EMQX_API_SECRET=YOUR_API_SECRET
+  EMQX_API_SECRET=YOUR_API_SECRET \
+  ROBOT_INGEST_SECRET=YOUR_RANDOM_64_CHARACTER_SECRET
 
 npx supabase functions deploy dispatch-delivery
+npx supabase functions deploy ingest-robot-message --no-verify-jwt
 ```
 
 Restrict the EMQX credentials to the publish API and the robot command topic namespace. A command is first recorded in `robot_commands`, published with QoS 1, and then acknowledged by the Pi.
+
+Configure one EMQX HTTP Server rule for the `acks`, `state`, `events`, and
+`presence` topics. It must POST to `ingest-robot-message` with the same
+`ROBOT_INGEST_SECRET` in the `x-emqx-secret` header. The complete SQL, request
+body, database transition map, and test procedure are in `project.md`.
 
 ## Raspberry Pi bridge
 
@@ -82,6 +90,11 @@ ROBOT_STATE_DIR=/var/lib/miit-rover
 ```
 
 The MQTT account for each robot should be allowed to subscribe only to its command topic and publish only to its state, event, acknowledgement and presence topics.
+
+The bridge publishes retained presence and reads telemetry from
+`${ROBOT_STATE_DIR}/robot_state.json`. A separate local mission manager writes
+durable event files to `${ROBOT_STATE_DIR}/event-outbox/`; see `project.md` for
+the exact state/event schemas and remaining Pi implementation.
 
 ## MQTT topics
 

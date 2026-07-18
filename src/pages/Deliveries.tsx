@@ -17,7 +17,7 @@ export function Deliveries() {
     const query = search.toLowerCase();
     const matchesSearch = !query || [delivery.trackingCode, delivery.itemName, delivery.recipientName].some((value) => value.toLowerCase().includes(query));
     const matchesFilter = filter === "ALL" ||
-      (filter === "ACTIVE" && ["ASSIGNED", "TO_SOURCE", "AT_SOURCE", "PACKAGE_LOADED", "TO_DESTINATION", "AT_DESTINATION", "DELIVERED", "RETURNING"].includes(delivery.status)) ||
+      (filter === "ACTIVE" && ["ASSIGNED", "DISPATCHED", "TO_SOURCE", "AT_SOURCE", "PACKAGE_LOADED", "TO_DESTINATION", "AT_DESTINATION", "DELIVERED", "RETURNING"].includes(delivery.status)) ||
       (filter === "WAITING" && ["REQUESTED", "APPROVED"].includes(delivery.status)) ||
       (filter === "COMPLETED" && ["COMPLETED", "CANCELLED"].includes(delivery.status));
     return matchesSearch && matchesFilter;

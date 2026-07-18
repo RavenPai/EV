@@ -183,7 +183,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const { error } = await supabase.functions.invoke("dispatch-delivery", { body: { deliveryId: id } });
       if (error) throw error;
       await refreshCloud();
-      showToast("Mission command published to the robot.");
+      showToast("Mission command published. Waiting for the robot to start.");
       return;
     }
     const delivery = deliveries.find((item) => item.id === id);

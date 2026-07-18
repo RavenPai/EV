@@ -8,6 +8,7 @@ const environment = [
   ["EMQX_API_URL", "Edge Function only", true],
   ["EMQX_API_KEY", "Edge Function secret", true],
   ["EMQX_API_SECRET", "Edge Function secret", true],
+  ["ROBOT_INGEST_SECRET", "EMQX webhook secret", true],
 ];
 
 export function Settings() {
@@ -24,7 +25,7 @@ export function Settings() {
           <div className="panel-heading"><div><span className="eyebrow">System path</span><h3>Cloud-to-robot architecture</h3></div><Router size={22} className="heading-icon" /></div>
           <div className="architecture-flow">
             <div><span className="architecture-icon"><Code2 size={20} /></span><strong>React web app</strong><small>Cloudflare Pages</small></div><i>HTTPS</i>
-            <div><span className="architecture-icon"><Database size={20} /></span><strong>Supabase</strong><small>Auth + PostgreSQL</small></div><i>MQTT/TLS</i>
+            <div><span className="architecture-icon"><Database size={20} /></span><strong>Supabase</strong><small>Auth + PostgreSQL</small></div><i>HTTPS API</i>
             <div><span className="architecture-icon"><MessageSquareMore size={20} /></span><strong>EMQX</strong><small>Command broker</small></div><i>TLS</i>
             <div><span className="architecture-icon"><Server size={20} /></span><strong>Raspberry Pi</strong><small>Mission manager</small></div><i>UART</i>
             <div><span className="architecture-icon"><TerminalSquare size={20} /></span><strong>ESP32</strong><small>Motor PID</small></div>
@@ -36,7 +37,7 @@ export function Settings() {
           <div className="panel-heading"><div><span className="eyebrow">Integration status</span><h3>Required services</h3></div><span className="count-badge">3 services</span></div>
           <div className="service-list">
             <div><span className="service-icon service-supabase"><Database size={20} /></span><div><strong>Supabase</strong><p>Authentication, deliveries, robot state and audit events</p></div><span className={`service-state ${cloudEnabled ? "connected" : "pending"}`}>{cloudEnabled ? "Connected" : "Configure"}</span></div>
-            <div><span className="service-icon service-emqx"><MessageSquareMore size={20} /></span><div><strong>EMQX Cloud</strong><p>Durable mission commands and robot acknowledgements</p></div><span className="service-state pending">Edge secret</span></div>
+            <div><span className="service-icon service-emqx"><MessageSquareMore size={20} /></span><div><strong>EMQX Cloud</strong><p>Mission commands plus robot acknowledgement and telemetry forwarding</p></div><span className="service-state pending">Rule required</span></div>
             <div><span className="service-icon service-cloudflare"><Cloud size={20} /></span><div><strong>Cloudflare Pages</strong><p>Global HTTPS hosting for the frontend application</p></div><span className="service-state ready">Ready</span></div>
           </div>
         </article>
@@ -55,9 +56,10 @@ export function Settings() {
           <div className="panel-heading"><div><span className="eyebrow">Go live</span><h3>Connection checklist</h3></div><ExternalLink size={20} className="heading-icon" /></div>
           <ol className="setup-steps">
             <li><span>1</span><div><strong>Create the Supabase project</strong><p>Run <code>supabase db push</code> with the included migration.</p></div></li>
-            <li><span>2</span><div><strong>Deploy the Edge Function</strong><p>Set EMQX secrets, then deploy <code>dispatch-delivery</code>.</p></div></li>
+            <li><span>2</span><div><strong>Deploy both Edge Functions</strong><p>Deploy command dispatch and authenticated robot ingestion.</p></div></li>
             <li><span>3</span><div><strong>Add frontend variables</strong><p>Copy the project URL and publishable key into the hosting dashboard.</p></div></li>
-            <li><span>4</span><div><strong>Register Raspberry Pi credentials</strong><p>Use a unique per-robot MQTT username and restricted topic ACL.</p></div></li>
+            <li><span>4</span><div><strong>Create the EMQX HTTP rule</strong><p>Forward robot topics with <code>x-emqx-secret</code>.</p></div></li>
+            <li><span>5</span><div><strong>Register Raspberry Pi credentials</strong><p>Use a unique per-robot MQTT username and restricted topic ACL.</p></div></li>
           </ol>
         </article>
 

@@ -40,6 +40,19 @@ Deno.serve(async (request) => {
       const { data: delivery, error } = await admin.from("deliveries").select("*").eq("id", body.deliveryId).single();
       if (error || !delivery) return json({ error: "Delivery not found" }, 404);
       if (delivery.status !== "ASSIGNED" || !delivery.robot_id) return json({ error: "Delivery must be assigned before dispatch" }, 409);
+
+      const { data: activeCommand, error: activeCommandError } = await admin
+        .from("robot_commands")
+        .select("id")
+        .eq("delivery_id", delivery.id)
+        .eq("command_type", "START_MISSION")
+        .in("status", ["PENDING", "PUBLISHED", "ACKNOWLEDGED"])
+        .gt("expires_at", new Date().toISOString())
+        .limit(1)
+        .maybeSingle();
+      if (activeCommandError) throw activeCommandError;
+      if (activeCommand) return json({ error: "An active mission command already exists for this delivery" }, 409);
+
       robotId = delivery.robot_id;
       deliveryId = delivery.id;
       commandType = "START_MISSION";
@@ -99,10 +112,20 @@ Deno.serve(async (request) => {
       return json({ error: "MQTT publish failed; command remains in the audit log" }, 502);
     }
 
-    await admin.from("robot_commands").update({ status: "PUBLISHED", published_at: new Date().toISOString() }).eq("id", commandId);
+    const publishedAt = new Date().toISOString();
+    const { error: publishedError } = await admin
+      .from("robot_commands")
+      .update({ status: "PUBLISHED", published_at: publishedAt })
+      .eq("id", commandId);
+    if (publishedError) throw publishedError;
+
     if (deliveryId) {
-      await admin.from("deliveries").update({ status: "TO_SOURCE", progress: 28, eta_minutes: 12, dispatched_at: new Date().toISOString() }).eq("id", deliveryId);
-      await admin.from("robots").update({ status: "BUSY", mode: "AUTO", current_delivery_id: deliveryId }).eq("id", robotId);
+      const { error: deliveryError } = await admin
+        .from("deliveries")
+        .update({ status: "DISPATCHED", dispatched_at: publishedAt })
+        .eq("id", deliveryId)
+        .eq("status", "ASSIGNED");
+      if (deliveryError) throw deliveryError;
     }
     return json({ commandId, status: "PUBLISHED", robotId });
   } catch (error) {

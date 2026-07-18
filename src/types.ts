@@ -4,6 +4,7 @@ export type DeliveryStatus =
   | "REQUESTED"
   | "APPROVED"
   | "ASSIGNED"
+  | "DISPATCHED"
   | "TO_SOURCE"
   | "AT_SOURCE"
   | "PACKAGE_LOADED"
