@@ -64,6 +64,11 @@ npx supabase functions deploy ingest-robot-message --no-verify-jwt
 
 Restrict the EMQX credentials to the publish API and the robot command topic namespace. A command is first recorded in `robot_commands`, published with QoS 1, and then acknowledged by the Pi.
 
+Supabase Cron runs once per minute and changes overdue `PENDING` or
+`PUBLISHED` commands to `EXPIRED`. Each expiration creates a
+`COMMAND_EXPIRED` warning in `robot_events`; it does not automatically retry
+the command or change delivery state.
+
 Configure one EMQX HTTP Server rule for the `acks`, `state`, `events`, and
 `presence` topics. It must POST to `ingest-robot-message` with the same
 `ROBOT_INGEST_SECRET` in the `x-emqx-secret` header. The complete SQL, request

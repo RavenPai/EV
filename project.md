@@ -556,6 +556,7 @@ Robot ingestion is added by:
 ```text
 supabase/migrations/202607170003_delivery_dispatched_status.sql
 supabase/migrations/202607170004_robot_ingestion.sql
+supabase/migrations/202607190005_expire_stale_robot_commands.sql
 ```
 
 ### 11.1 Extensions and enum types
@@ -651,6 +652,8 @@ It records:
 - Issuing staff user.
 - Issue, expiration, publication, and acknowledgement timestamps.
 - Result metadata.
+- Automatic expiration of overdue `PENDING` and `PUBLISHED` records.
+- A `COMMAND_EXPIRED` warning event for every automatically expired command.
 
 Allowed command record states:
 
@@ -1259,6 +1262,7 @@ EV/
 | `202607160002_server_tracking_codes.sql` | Concurrency-safe tracking code generation |
 | `202607170003_delivery_dispatched_status.sql` | Separates broker publication from physical mission start |
 | `202607170004_robot_ingestion.sql` | Telemetry/event schema, atomic ingestion functions, and offline Cron job |
+| `202607190005_expire_stale_robot_commands.sql` | Expires overdue unacknowledged commands and records warning events |
 | `robot-pi/agent.py` | Secure MQTT-to-local mission and ESP32 bridge |
 | `robot-pi/requirements.txt` | Pi Python dependencies |
 
@@ -1537,6 +1541,7 @@ The repository is honest about the boundary between an MVP and a production auto
 - Event-driven cloud delivery checkpoints.
 - Retained presence and Pi heartbeat publication.
 - Automatic stale-robot detection through Supabase Cron.
+- Automatic expiration and audit events for stale `PENDING` and `PUBLISHED` commands.
 - Durable Pi event outbox interface for the local mission manager.
 - Production web packaging.
 
@@ -1549,7 +1554,6 @@ The repository is honest about the boundary between an MVP and a production auto
 - Hardware heartbeat/watchdog implementation.
 - Hardware E-stop implementation.
 - Cargo-lock firmware and secure unlock-code delivery.
-- Automatic command expiration worker.
 - Transactional robot assignment that prevents double-booking.
 - SMS or other recipient notification delivery.
 - Full cloud integration tests.
@@ -1678,7 +1682,17 @@ esp32=OFFLINE
 
 It also inserts a `ROBOT_OFFLINE` audit event. The physical robot must not depend on this cloud timeout for stopping; the ESP32 and local mission manager must stop independently and much faster.
 
-### 28.4 Remaining deployment action
+### 28.4 Command expiration behavior
+
+The `expire-stale-robot-commands` Supabase Cron job runs once per minute. It atomically finds commands whose `expires_at` time has passed while their status is still `PENDING` or `PUBLISHED`, then:
+
+1. Changes the command status to `EXPIRED`.
+2. Preserves the existing `result` JSON and adds the reason, expiration time, and previous status.
+3. Inserts one `COMMAND_EXPIRED` warning into `robot_events` for auditing.
+
+Commands already in `ACKNOWLEDGED`, `COMPLETED`, `REJECTED`, `FAILED`, or `EXPIRED` are not changed. Expiration also does not retry the command or change its delivery or robot state: a missing acknowledgement does not prove that the robot never received the command. Any retry or delivery recovery must be an explicit, separately validated action.
+
+### 28.5 Remaining deployment action
 
 Repository implementation does not create the EMQX connector automatically. An operator must:
 
