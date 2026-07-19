@@ -1692,16 +1692,28 @@ The `expire-stale-robot-commands` Supabase Cron job runs once per minute. It ato
 
 Commands already in `ACKNOWLEDGED`, `COMPLETED`, `REJECTED`, `FAILED`, or `EXPIRED` are not changed. Expiration also does not retry the command or change its delivery or robot state: a missing acknowledgement does not prove that the robot never received the command. Any retry or delivery recovery must be an explicit, separately validated action.
 
-### 28.5 Remaining deployment action
+### 28.5 Deployment and verification status
 
-Repository implementation does not create the EMQX connector automatically. An operator must:
+As of 2026-07-19, deployment checklist steps 1 through 8 have been completed, from deploying the updated frontend through verifying the database.
 
-1. Apply the pending migrations.
-2. Set `ROBOT_INGEST_SECRET`.
-3. Deploy `ingest-robot-message` without JWT verification.
-4. Paste the same secret into the EMQX HTTP action header.
-5. Create the four-topic rule and request-body template described in section 22.
-6. Send a real presence message and inspect EMQX action metrics and Supabase Function logs.
+Step 9, **Test the web workflow**, is blocked at dispatch. Clicking **Dispatch mission** creates the `START_MISSION` audit command, but the delivery does not change from `ASSIGNED` to `DISPATCHED`.
+
+A read-only inspection of the linked Supabase database found:
+
+- The latest commands for `MIIT-1051` and `MIIT-1052` have status `FAILED`.
+- Both records have `published_at = null`.
+- Both records contain `result.httpStatus = 403`.
+- Their deliveries correctly remain `ASSIGNED`.
+
+This proves that the browser reached `dispatch-delivery`, authentication and staff authorization passed, and the command row was inserted. EMQX then rejected the Deployment API publish request with HTTP 403. The Edge Function intentionally changes a delivery to `DISPATCHED` only after EMQX accepts the publish.
+
+To unblock step 9:
+
+1. In the target EMQX deployment, create or verify a **Deployment API Key**.
+2. Use its **App ID** and **App Secret**, not an MQTT client username/password or a platform-level API key.
+3. Confirm that the configured API endpoint is the Broker Deployment API for this deployment. With the current function, the final publish URL must resolve to `https://EMQX_API_HOST/api/v5/publish`.
+4. Replace `EMQX_API_URL`, `EMQX_API_KEY`, and `EMQX_API_SECRET` in Supabase Edge Function Secrets. Supabase makes updated secrets available without redeploying the function.
+5. Retry dispatch and verify that the new command is `PUBLISHED`, its `published_at` is populated, and the delivery becomes `DISPATCHED`.
 
 ## 29. Detailed Raspberry Pi work remaining
 
