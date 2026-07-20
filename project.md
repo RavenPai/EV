@@ -143,6 +143,7 @@ Characteristics:
 - Sign-up creates a Supabase Auth user with `full_name` metadata.
 - A database trigger creates the matching `public.profiles` row.
 - The current profile role controls the application role.
+- New delivery requests snapshot the authenticated profile's trimmed full name and email.
 - Deliveries and robots are read from PostgreSQL.
 - Realtime subscriptions refresh the frontend after delivery or robot changes.
 - RLS controls which records each authenticated user can read or modify.
@@ -551,12 +552,13 @@ Server-generated tracking codes are added by:
 supabase/migrations/202607160002_server_tracking_codes.sql
 ```
 
-Robot ingestion is added by:
+Later cloud workflow and robot-ingestion changes are added by:
 
 ```text
 supabase/migrations/202607170003_delivery_dispatched_status.sql
 supabase/migrations/202607170004_robot_ingestion.sql
 supabase/migrations/202607190005_expire_stale_robot_commands.sql
+supabase/migrations/202607190006_authenticated_delivery_requester.sql
 ```
 
 ### 11.1 Extensions and enum types
@@ -582,6 +584,7 @@ Behavior:
 - `handle_new_user()` inserts a profile after an Auth user is created.
 - New users receive `USER`.
 - Deleting an Auth user cascades to the profile.
+- Delivery creation reloads the caller's profile at submission time and rejects a missing or incomplete profile.
 
 ### 11.3 `locations`
 
@@ -627,6 +630,7 @@ Important constraints:
 - Priority must be `NORMAL`, `HIGH`, or `URGENT`.
 - Progress must remain between 0 and 100.
 - Source, destination, requester, approver, and robot references are relationally constrained.
+- A before-insert trigger overwrites requester ID, name, and email from the authenticated profile so browser-supplied labels cannot be spoofed.
 
 The table also reserves fields for:
 
@@ -1263,6 +1267,7 @@ EV/
 | `202607170003_delivery_dispatched_status.sql` | Separates broker publication from physical mission start |
 | `202607170004_robot_ingestion.sql` | Telemetry/event schema, atomic ingestion functions, and offline Cron job |
 | `202607190005_expire_stale_robot_commands.sql` | Expires overdue unacknowledged commands and records warning events |
+| `202607190006_authenticated_delivery_requester.sql` | Enforces authenticated requester identity on delivery insertion |
 | `robot-pi/agent.py` | Secure MQTT-to-local mission and ESP32 bridge |
 | `robot-pi/requirements.txt` | Pi Python dependencies |
 
@@ -1542,6 +1547,7 @@ The repository is honest about the boundary between an MVP and a production auto
 - Retained presence and Pi heartbeat publication.
 - Automatic stale-robot detection through Supabase Cron.
 - Automatic expiration and audit events for stale `PENDING` and `PUBLISHED` commands.
+- Authenticated profile snapshots for cloud delivery requester identity.
 - Durable Pi event outbox interface for the local mission manager.
 - Production web packaging.
 
@@ -1563,7 +1569,6 @@ The repository is honest about the boundary between an MVP and a production auto
 
 - The schematic map uses static campus coordinates, not live SLAM coordinates.
 - Dashboard copy and some metrics are representative rather than calculated from historical analytics.
-- In cloud delivery creation, requester display fields currently use demo labels while `requester_id` stores the authenticated identity. A production revision should populate name and email from the verified profile.
 - The frontend model can display an unlock code, while the database stores only `unlock_code_hash`. A secure reveal/verification flow is still required.
 - `RESUME` is acknowledged by the bridge, but actual mission resumption is intentionally delegated to a local mission manager after safety checks.
 - The bridge provides state and event handoff files, but the local mission manager that produces them is still a required Pi component.
@@ -1576,12 +1581,11 @@ Suggested order:
 2. Implement the Pi mission manager that consumes requests and produces state/events.
 3. Implement the ESP32 motor, encoder, heartbeat, and physical E-stop firmware.
 4. Make robot assignment transactional and reject already-occupied robots.
-5. Populate requester fields from the authenticated profile.
-6. Design the cargo-lock and one-time-code lifecycle.
-7. Add broker ACL tests and credential rotation procedures.
-8. Add Supabase integration tests and an MQTT test broker.
-9. Perform supervised hardware-in-the-loop testing with wheels raised.
-10. Complete a hazard analysis before any unsupervised campus trial.
+5. Design the cargo-lock and one-time-code lifecycle.
+6. Add broker ACL tests and credential rotation procedures.
+7. Add Supabase integration tests and an MQTT test broker.
+8. Perform supervised hardware-in-the-loop testing with wheels raised.
+9. Complete a hazard analysis before any unsupervised campus trial.
 
 ## 26. Security and privacy checklist
 

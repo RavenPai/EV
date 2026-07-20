@@ -138,19 +138,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const createDelivery = async (input: NewDeliveryInput) => {
-    const sequence = Math.max(1050, ...deliveries.map((item) => Number(item.trackingCode.split("-")[1]) || 0)) + 1;
-    const trackingCode = `MIIT-${sequence}`;
-    const now = new Date().toISOString();
-    const newDelivery: Delivery = {
-      id: createId(), trackingCode, requesterName: "Demo User", requesterEmail: "user@miit.edu.mm",
-      ...input, status: "REQUESTED", createdAt: now, updatedAt: now, progress: 5, etaMinutes: 18,
-    };
     if (cloudEnabled && supabase) {
-      const { data: authData } = await supabase.auth.getUser();
+      const { data: authData, error: authError } = await supabase.auth.getUser();
+      if (authError || !authData.user) {
+        throw new Error("Your session has expired. Sign in again before creating a delivery.");
+      }
+
+      const { data: profile, error: profileError } = await supabase
+        .from("profiles")
+        .select("full_name, email")
+        .eq("id", authData.user.id)
+        .maybeSingle();
+      if (profileError) {
+        throw new Error("Your authenticated profile could not be loaded. Please try again.");
+      }
+      if (!profile) {
+        throw new Error("Your account profile is missing. Contact an administrator before creating a delivery.");
+      }
+
+      const requesterName = typeof profile.full_name === "string" ? profile.full_name.trim() : "";
+      const requesterEmail = typeof profile.email === "string" ? profile.email.trim() : "";
+      if (!requesterName || !requesterEmail) {
+        throw new Error("Your profile must include a full name and email before creating a delivery.");
+      }
+
       const { data, error } = await supabase.from("deliveries").insert({
-        requester_id: authData.user?.id ?? null,
-        requester_name: newDelivery.requesterName,
-        requester_email: newDelivery.requesterEmail,
+        requester_id: authData.user.id,
+        requester_name: requesterName,
+        requester_email: requesterEmail,
         recipient_name: input.recipientName,
         recipient_phone: input.recipientPhone,
         source_id: input.sourceId,
@@ -166,6 +181,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       showToast(`${data.tracking_code} was submitted for approval.`);
       return String(data.id);
     }
+
+    const sequence = Math.max(1050, ...deliveries.map((item) => Number(item.trackingCode.split("-")[1]) || 0)) + 1;
+    const trackingCode = `MIIT-${sequence}`;
+    const now = new Date().toISOString();
+    const newDelivery: Delivery = {
+      id: createId(), trackingCode, requesterName: "Demo User", requesterEmail: "user@miit.edu.mm",
+      ...input, status: "REQUESTED", createdAt: now, updatedAt: now, progress: 5, etaMinutes: 18,
+    };
     setDeliveries((items) => [newDelivery, ...items]);
     setNotifications((items) => [{ id: createId(), title: "Delivery request created", message: `${trackingCode} is waiting for approval.`, time: now, read: false, type: "info" }, ...items]);
     showToast(`${trackingCode} was submitted for approval.`);
