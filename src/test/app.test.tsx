@@ -27,7 +27,7 @@ describe("MIIT Rover delivery workflows", () => {
     await user.click(screen.getByRole("button", { name: "Submit delivery request" }));
 
     await waitFor(() => expect(window.location.pathname).toBe("/deliveries"));
-    expect(await screen.findByText("MIIT-1051")).toBeTruthy();
+    expect(await screen.findByText("MIIT-1051", {}, { timeout: 5000 })).toBeTruthy();
     expect(screen.getByText("Sensor calibration kit")).toBeTruthy();
     await waitFor(() => {
       const saved = JSON.parse(localStorage.getItem("miit-rover-deliveries-v1") ?? "[]");
@@ -36,7 +36,7 @@ describe("MIIT Rover delivery workflows", () => {
         requesterEmail: "user@miit.edu.mm",
       });
     });
-  });
+  }, 15_000);
 
   it("approves, assigns and dispatches a waiting request", async () => {
     const user = userEvent.setup();

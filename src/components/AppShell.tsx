@@ -90,12 +90,13 @@ export function AppShell({ children }: { children: ReactNode }) {
           <div className="topbar-actions">
             <div className="live-badge"><i /> {cloudEnabled ? "Cloud live" : "Demo live"}</div>
             <div className="popover-wrap">
-              <button className="icon-button" onClick={() => { setNotificationsOpen((value) => !value); if (!notificationsOpen) markNotificationsRead(); }} aria-label="Notifications">
+              <button className="icon-button" onClick={() => { setNotificationsOpen((value) => !value); if (!notificationsOpen) void markNotificationsRead(); }} aria-label="Notifications">
                 <Bell size={19} />{unread > 0 && <span className="notification-count">{unread}</span>}
               </button>
               {notificationsOpen && (
                 <div className="popover notification-popover">
                   <div className="popover-header"><strong>Notifications</strong><span>{notifications.length} recent</span></div>
+                  {notifications.length === 0 && <p className="notification-empty">No notifications yet.</p>}
                   {notifications.slice(0, 4).map((item) => (
                     <div className="notification-item" key={item.id}><i className={`notification-${item.type}`} /><div><strong>{item.title}</strong><p>{item.message}</p><time>{new Date(item.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></div></div>
                   ))}

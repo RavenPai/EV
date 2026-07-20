@@ -63,11 +63,13 @@ export function Settings() {
           </ol>
         </article>
 
-        <article className="panel demo-tools-panel">
-          <div className="panel-heading"><div><span className="eyebrow">Development tools</span><h3>Demo data</h3></div><RefreshCw size={20} className="heading-icon" /></div>
-          <p>Restore the sample missions, robots and notifications used for UI testing.</p>
-          <button className="button button-secondary button-full" onClick={resetDemo}><RefreshCw size={17} />Reset demo workspace</button>
-        </article>
+        {!cloudEnabled && (
+          <article className="panel demo-tools-panel">
+            <div className="panel-heading"><div><span className="eyebrow">Development tools</span><h3>Demo data</h3></div><RefreshCw size={20} className="heading-icon" /></div>
+            <p>Restore the sample missions, robots and notifications used for UI testing.</p>
+            <button className="button button-secondary button-full" onClick={resetDemo}><RefreshCw size={17} />Reset demo workspace</button>
+          </article>
+        )}
       </section>
     </div>
   );

@@ -99,6 +99,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .notification-item strong { display: block; font-size: 11px; }
 .notification-item p { margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.45; }
 .notification-item time { display: block; margin-top: 5px; color: #9aa4a1; font-size: 9px; }
+.notification-empty { margin: 0; padding: 18px 16px; color: var(--muted); font-size: 11px; text-align: center; }
 .page-content { width: min(1500px, 100%); margin: 0 auto; padding: 26px 30px 42px; }
 
 .panel { border: 1px solid #e1e7e3; border-radius: 16px; background: var(--panel); box-shadow: var(--shadow); }

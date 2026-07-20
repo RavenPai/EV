@@ -10,8 +10,12 @@ const mocks = vi.hoisted(() => ({
   requesterProfileMaybeSingle: vi.fn(),
   deliveryRowsOrder: vi.fn(),
   robotRowsOrder: vi.fn(),
+  notificationSelect: vi.fn(),
+  notificationRowsOrder: vi.fn(),
+  notificationRowsLimit: vi.fn(),
   deliveryInsert: vi.fn(),
   deliveryInsertSingle: vi.fn(),
+  rpc: vi.fn(),
   channelOn: vi.fn(),
   channelSubscribe: vi.fn(),
   removeChannel: vi.fn(),
@@ -53,8 +57,22 @@ vi.mock("../lib/supabase", () => {
         if (table === "robots") {
           return { select: () => ({ order: mocks.robotRowsOrder }) };
         }
+        if (table === "notifications") {
+          return {
+            select: (columns: string) => {
+              mocks.notificationSelect(columns);
+              return {
+                order: (column: string, options: Record<string, unknown>) => {
+                  mocks.notificationRowsOrder(column, options);
+                  return { limit: mocks.notificationRowsLimit };
+                },
+              };
+            },
+          };
+        }
         throw new Error(`Unexpected Supabase table: ${table}`);
       },
+      rpc: mocks.rpc,
       channel: () => channel,
       removeChannel: mocks.removeChannel,
     },
@@ -95,6 +113,29 @@ function CreateDeliveryHarness() {
   );
 }
 
+function NotificationsHarness() {
+  const { notifications, markNotificationsRead } = useApp();
+
+  return (
+    <>
+      <output data-testid="notification-count">{notifications.length}</output>
+      {notifications.map((notification) => (
+        <article
+          key={notification.id}
+          data-testid={`notification-${notification.id}`}
+          data-read={String(notification.read)}
+          data-type={notification.type}
+        >
+          <h2>{notification.title}</h2>
+          <p>{notification.message}</p>
+          <time>{notification.time}</time>
+        </article>
+      ))}
+      <button onClick={() => void markNotificationsRead()}>Mark notifications read</button>
+    </>
+  );
+}
+
 describe("cloud delivery requester identity", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -109,6 +150,8 @@ describe("cloud delivery requester identity", () => {
     });
     mocks.deliveryRowsOrder.mockResolvedValue({ data: [], error: null });
     mocks.robotRowsOrder.mockResolvedValue({ data: [], error: null });
+    mocks.notificationRowsLimit.mockResolvedValue({ data: [], error: null });
+    mocks.rpc.mockResolvedValue({ data: null, error: null });
     mocks.deliveryInsertSingle.mockResolvedValue({
       data: { id: "delivery-123", tracking_code: "MIIT-2001" },
       error: null,
@@ -142,5 +185,92 @@ describe("cloud delivery requester identity", () => {
 
     expect(await screen.findByText(/account profile is missing/i)).toBeTruthy();
     expect(mocks.deliveryInsert).not.toHaveBeenCalled();
+  });
+});
+
+describe("cloud database notifications", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getUser.mockResolvedValue({
+      data: { user: { id: "user-123", email: "user@miit.edu.mm" } },
+      error: null,
+    });
+    mocks.profileRoleSingle.mockResolvedValue({ data: { role: "USER" }, error: null });
+    mocks.deliveryRowsOrder.mockResolvedValue({ data: [], error: null });
+    mocks.robotRowsOrder.mockResolvedValue({ data: [], error: null });
+    mocks.notificationRowsLimit.mockResolvedValue({ data: [], error: null });
+    mocks.rpc.mockResolvedValue({ data: null, error: null });
+  });
+
+  it("queries and maps notification rows from Supabase", async () => {
+    mocks.notificationRowsLimit.mockResolvedValueOnce({
+      data: [{
+        id: "notification-db-1",
+        title: "Delivery approved",
+        message: "MIIT-2001 is ready for assignment.",
+        type: "success",
+        created_at: "2026-07-20T08:30:00.000Z",
+        read_at: null,
+      }],
+      error: null,
+    });
+
+    render(<AppProvider><NotificationsHarness /></AppProvider>);
+
+    expect(await screen.findByText("Delivery approved")).toBeTruthy();
+    expect(screen.getByText("MIIT-2001 is ready for assignment.")).toBeTruthy();
+    expect(screen.getByText("2026-07-20T08:30:00.000Z")).toBeTruthy();
+    const notification = screen.getByTestId("notification-notification-db-1");
+    expect(notification.getAttribute("data-type")).toBe("success");
+    expect(notification.getAttribute("data-read")).toBe("false");
+    expect(mocks.notificationSelect).toHaveBeenCalledWith("id, title, message, type, created_at, read_at");
+    expect(mocks.notificationRowsOrder).toHaveBeenCalledWith("created_at", { ascending: false });
+    expect(mocks.notificationRowsLimit).toHaveBeenCalledWith(50);
+  });
+
+  it("does not leak demo notifications into cloud mode", async () => {
+    render(<AppProvider><NotificationsHarness /></AppProvider>);
+
+    await waitFor(() => expect(mocks.notificationRowsLimit).toHaveBeenCalled());
+    expect(screen.getByTestId("notification-count").textContent).toBe("0");
+    expect(screen.queryByText("Rover 01 reached Library junction")).toBeNull();
+    expect(screen.queryByText("Delivery request received")).toBeNull();
+    expect(screen.queryByText("Delivery completed")).toBeNull();
+  });
+
+  it("registers notifications with the realtime refresh channel", async () => {
+    render(<AppProvider><NotificationsHarness /></AppProvider>);
+
+    await waitFor(() => {
+      expect(mocks.channelOn).toHaveBeenCalledWith(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "notifications" },
+        expect.any(Function),
+      );
+    });
+  });
+
+  it("marks unread notifications locally and through the database RPC", async () => {
+    mocks.notificationRowsLimit.mockResolvedValueOnce({
+      data: [{
+        id: "notification-db-2",
+        title: "Robot warning",
+        message: "Robot 01 reported a low battery.",
+        type: "warning",
+        created_at: "2026-07-20T08:35:00.000Z",
+        read_at: null,
+      }],
+      error: null,
+    });
+    const user = userEvent.setup();
+    render(<AppProvider><NotificationsHarness /></AppProvider>);
+
+    const notification = await screen.findByTestId("notification-notification-db-2");
+    expect(notification.getAttribute("data-read")).toBe("false");
+
+    await user.click(screen.getByRole("button", { name: "Mark notifications read" }));
+
+    await waitFor(() => expect(mocks.rpc).toHaveBeenCalledWith("mark_notifications_read"));
+    expect(notification.getAttribute("data-read")).toBe("true");
   });
 });

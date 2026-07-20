@@ -21,7 +21,7 @@ interface AppContextValue {
   cancelDelivery: (id: string) => Promise<void>;
   advanceDelivery: (id: string) => Promise<void>;
   sendRobotCommand: (robotId: string, command: "PAUSE" | "RESUME" | "RETURN_HOME" | "ESTOP") => Promise<void>;
-  markNotificationsRead: () => void;
+  markNotificationsRead: () => Promise<void>;
   resetDemo: () => void;
 }
 
@@ -70,11 +70,23 @@ const mapCloudRobot = (row: Record<string, unknown>): Robot => ({
   esp32: row.esp32 as Robot["esp32"], motorTempC: Number(row.motor_temp_c),
 });
 
+const mapCloudNotification = (row: Record<string, unknown>): NotificationItem => {
+  const type = row.type === "success" || row.type === "warning" ? row.type : "info";
+  return {
+    id: String(row.id),
+    title: String(row.title),
+    message: String(row.message),
+    time: String(row.created_at),
+    read: row.read_at != null,
+    type,
+  };
+};
+
 export function AppProvider({ children }: { children: ReactNode }) {
   const [role, setRole] = useState<UserRole>("ADMIN");
   const [deliveries, setDeliveries] = useState<Delivery[]>(() => readLocal(DELIVERY_KEY, initialDeliveries));
   const [robots, setRobots] = useState<Robot[]>(() => readLocal(ROBOT_KEY, initialRobots));
-  const [notifications, setNotifications] = useState(initialNotifications);
+  const [notifications, setNotifications] = useState<NotificationItem[]>(() => cloudEnabled ? [] : initialNotifications);
   const [toast, setToast] = useState<Toast>();
 
   const showToast = useCallback((message: string, tone: Toast["tone"] = "success") => {
@@ -88,16 +100,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const { data: profile } = await supabase.from("profiles").select("role").eq("id", authData.user.id).single();
       if (profile?.role) setRole(profile.role as UserRole);
     }
-    const [{ data: deliveryRows, error: deliveryError }, { data: robotRows, error: robotError }] = await Promise.all([
+    const [
+      { data: deliveryRows, error: deliveryError },
+      { data: robotRows, error: robotError },
+      { data: notificationRows, error: notificationError },
+    ] = await Promise.all([
       supabase.from("deliveries").select("*").order("created_at", { ascending: false }),
       supabase.from("robots").select("*").order("name"),
+      supabase
+        .from("notifications")
+        .select("id, title, message, type, created_at, read_at")
+        .order("created_at", { ascending: false })
+        .limit(50),
     ]);
-    if (deliveryError || robotError) {
-      showToast("Cloud data could not be loaded. Check RLS and environment settings.", "warning");
-      return;
-    }
     if (deliveryRows) setDeliveries(deliveryRows.map((row) => mapCloudDelivery(row)));
     if (robotRows) setRobots(robotRows.map((row) => mapCloudRobot(row)));
+    if (notificationRows) setNotifications(notificationRows.map((row) => mapCloudNotification(row)));
+    if (deliveryError || robotError || notificationError) {
+      showToast("Cloud data could not be loaded. Check RLS and environment settings.", "warning");
+    }
   }, [showToast]);
 
   useEffect(() => {
@@ -108,6 +129,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       .channel("operations-live")
       .on("postgres_changes", { event: "*", schema: "public", table: "deliveries" }, refreshCloud)
       .on("postgres_changes", { event: "*", schema: "public", table: "robots" }, refreshCloud)
+      .on("postgres_changes", { event: "*", schema: "public", table: "notifications" }, refreshCloud)
       .subscribe();
     return () => { void client.removeChannel(channel); };
   }, [refreshCloud]);
@@ -253,7 +275,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
     showToast(`${command.replace("_", " ")} command acknowledged in demo mode.`, command === "ESTOP" ? "danger" : "success");
   };
 
+  const markNotificationsRead = useCallback(async () => {
+    const unreadIds = notifications.filter((item) => !item.read).map((item) => item.id);
+    if (unreadIds.length === 0) return;
+
+    setNotifications((items) => items.map((item) => ({ ...item, read: true })));
+    if (!cloudEnabled || !supabase) return;
+
+    const { error } = await supabase.rpc("mark_notifications_read");
+    if (error) {
+      await refreshCloud();
+      showToast("Notifications could not be marked as read.", "warning");
+    }
+  }, [notifications, refreshCloud, showToast]);
+
   const resetDemo = () => {
+    if (cloudEnabled) {
+      void refreshCloud();
+      showToast("Cloud data cannot be replaced with demo records.", "warning");
+      return;
+    }
     setDeliveries(initialDeliveries);
     setRobots(initialRobots);
     setNotifications(initialNotifications);
@@ -265,8 +306,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const value = useMemo<AppContextValue>(() => ({
     role, setRole, deliveries, robots, notifications, toast, dismissToast: () => setToast(undefined),
     createDelivery, approveDelivery, assignDelivery, dispatchDelivery, cancelDelivery, advanceDelivery,
-    sendRobotCommand, markNotificationsRead: () => setNotifications((items) => items.map((item) => ({ ...item, read: true }))), resetDemo,
-  }), [role, deliveries, robots, notifications, toast]);
+    sendRobotCommand, markNotificationsRead, resetDemo,
+  }), [role, deliveries, robots, notifications, toast, markNotificationsRead]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

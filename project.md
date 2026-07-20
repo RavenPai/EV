@@ -45,7 +45,7 @@ The user-facing product also provides:
 - Robot battery, signal, speed, mode, and sensor health.
 - PAUSE, RESUME, RETURN_HOME, and ESTOP requests.
 - Role-specific navigation and views.
-- Local notifications and toast feedback.
+- Database-backed cloud notifications with persistent read state, plus local demo alerts and toast feedback.
 
 ## 3. System architecture
 
@@ -304,7 +304,7 @@ markNotificationsRead
 resetDemo
 ```
 
-Cloud rows use snake_case database fields. `mapCloudDelivery` and `mapCloudRobot` convert them to the camelCase frontend models.
+Cloud rows use snake_case database fields. `mapCloudDelivery`, `mapCloudRobot`, and `mapCloudNotification` convert them to the camelCase frontend models.
 
 ### 7.4 Authentication gate
 
@@ -509,7 +509,7 @@ Locations contain:
 - Seven campus locations.
 - Five representative deliveries across requested, assigned, active, and completed states.
 - Three robots with different readiness states.
-- Three notifications.
+- Three notifications used only when the application is running in demo mode.
 - Status ordering and formatting helpers.
 
 The locations are:
@@ -559,6 +559,7 @@ supabase/migrations/202607170003_delivery_dispatched_status.sql
 supabase/migrations/202607170004_robot_ingestion.sql
 supabase/migrations/202607190005_expire_stale_robot_commands.sql
 supabase/migrations/202607190006_authenticated_delivery_requester.sql
+supabase/migrations/202607200007_database_notifications.sql
 ```
 
 ### 11.1 Extensions and enum types
@@ -585,6 +586,7 @@ Behavior:
 - New users receive `USER`.
 - Deleting an Auth user cascades to the profile.
 - Delivery creation reloads the caller's profile at submission time and rejects a missing or incomplete profile.
+- Authenticated users may edit only their own full name and email; role changes require a trusted administrative context.
 
 ### 11.3 `locations`
 
@@ -688,15 +690,31 @@ ERROR
 CRITICAL
 ```
 
-### 11.8 Triggers and indexes
+### 11.8 `notifications`
+
+Purpose:
+
+- Persistent, per-user in-app notifications.
+- Personal delivery updates for the requester.
+- Staff operational alerts for administrators and robot operators.
+- Durable unread state through `read_at`.
+
+Delivery insert and status-change triggers create notifications automatically. Selected robot safety and fault events, including offline robots, expired commands, E-stop activation, low battery, ESP32 disconnects, and bridge faults, fan out to current staff. Each recipient and source event has a unique `event_key`, so retries cannot create duplicate alerts.
+
+The browser can read only its own visible notifications. It cannot insert, edit, or delete notification content. The `mark_notifications_read()` RPC marks only the authenticated caller's visible alerts. Staff alerts remain staff-only after a user is demoted.
+
+Notifications are generated only for events that happen after this migration is applied; historical deliveries and robot events are intentionally not backfilled as new unread alerts.
+
+### 11.9 Triggers and indexes
 
 The schema includes:
 
 - Automatic `updated_at` triggers for deliveries and robots.
-- Indexes for requester history, status queues, assigned robot lookups, pending commands, and delivery events.
-- Realtime publication for `deliveries` and `robots`.
+- Automatic notification triggers for delivery changes and selected robot events.
+- Indexes for requester history, status queues, assigned robot lookups, pending commands, delivery events, notification history, and unread notifications.
+- Realtime publication for `deliveries`, `robots`, and `notifications`.
 
-### 11.9 Server-generated tracking codes
+### 11.10 Server-generated tracking codes
 
 The second migration creates `delivery_tracking_sequence`.
 
@@ -714,12 +732,13 @@ All application tables have RLS enabled.
 
 | Table | Read policy | Write policy |
 |---|---|---|
-| `profiles` | Own profile or staff | User can update own profile |
+| `profiles` | Own profile or staff | User can update only own full name and email |
 | `locations` | Authenticated users can read active locations | Admin can manage |
 | `robots` | Authenticated users can read | Admin or operator can update |
 | `deliveries` | Requester reads own; staff reads all | User creates/cancels own; staff updates |
 | `robot_commands` | Staff only | Created and updated through trusted service context |
 | `robot_events` | Staff only | Intended for trusted robot/backend ingestion |
+| `notifications` | Recipient only; staff alerts additionally require a current staff role | Content is trigger-managed; caller can mark visible rows read only through an RPC |
 
 `current_user_role()` is a stable security-definer function used by policies to resolve the caller's role.
 
@@ -1268,6 +1287,7 @@ EV/
 | `202607170004_robot_ingestion.sql` | Telemetry/event schema, atomic ingestion functions, and offline Cron job |
 | `202607190005_expire_stale_robot_commands.sql` | Expires overdue unacknowledged commands and records warning events |
 | `202607190006_authenticated_delivery_requester.sql` | Enforces authenticated requester identity on delivery insertion |
+| `202607200007_database_notifications.sql` | Adds persistent per-user notifications, secure read state, event triggers, and Realtime |
 | `robot-pi/agent.py` | Secure MQTT-to-local mission and ESP32 bridge |
 | `robot-pi/requirements.txt` | Pi Python dependencies |
 
@@ -1548,6 +1568,9 @@ The repository is honest about the boundary between an MVP and a production auto
 - Automatic stale-robot detection through Supabase Cron.
 - Automatic expiration and audit events for stale `PENDING` and `PUBLISHED` commands.
 - Authenticated profile snapshots for cloud delivery requester identity.
+- Database-backed delivery and operational notifications with persistent per-user read state.
+- Realtime notification refresh and protected mark-as-read RPC.
+- Column-restricted profile editing that prevents role self-promotion.
 - Durable Pi event outbox interface for the local mission manager.
 - Production web packaging.
 
@@ -1982,3 +2005,39 @@ Use this order and record every result:
 16. Only then test a supervised cargo mission in an isolated area.
 
 Do not begin unsupervised campus trials until the physical E-stop, local watchdogs, stopping distance, obstacle detection, and recovery behavior have documented pass results.
+
+## 30. Database-backed notification update
+
+Migration `202607200007_database_notifications.sql` replaces frontend-only cloud alerts with a durable Supabase notification path:
+
+```text
+Delivery insert/status change or safety/fault robot event
+  -> PostgreSQL notification trigger
+  -> one notification row per intended recipient
+  -> notification RLS
+  -> Supabase Realtime
+  -> AppProvider
+  -> notification bell
+```
+
+Cloud behavior:
+
+1. A requester receives a notification when a delivery is created and whenever its status changes.
+2. Current administrators and operators receive new-request, status-change, and selected warning/error/critical robot alerts.
+3. Deterministic per-recipient event keys suppress duplicate notification rows.
+4. The frontend loads the latest 50 visible records and refreshes when Realtime reports a change.
+5. Opening the bell optimistically clears the unread badge and calls `mark_notifications_read()`.
+6. If the RPC fails, the frontend reloads authoritative database state and shows a warning.
+7. A cloud session starts with an empty notification collection, so demo alerts cannot flash before the database query completes.
+8. Demo notification records remain available only in local demo mode.
+
+Security behavior:
+
+- RLS requires `recipient_id = auth.uid()`.
+- A `STAFF` alert also requires the recipient's current role to be `ADMIN` or `OPERATOR`.
+- Authenticated browser clients have no direct insert, update, or delete grant on notification content.
+- The security-definer mark-read RPC is authenticated, caller-scoped, and idempotent.
+- Notification metadata contains safe identifiers and does not copy arbitrary robot event payloads.
+- Profile update privileges are limited to `full_name` and `email`, preventing users from assigning themselves a staff role.
+
+The migration intentionally does not turn old deliveries or old robot events into unread alerts. External SMS, email, or push delivery is still a separate future feature.
