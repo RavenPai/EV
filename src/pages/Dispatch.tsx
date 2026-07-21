@@ -11,7 +11,7 @@ export function Dispatch() {
   const queue = useMemo(() => deliveries.filter((delivery) => !["COMPLETED", "CANCELLED", "FAILED"].includes(delivery.status)), [deliveries]);
   const [selectedId, setSelectedId] = useState(queue[0]?.id);
   const selected = queue.find((delivery) => delivery.id === selectedId) ?? queue[0];
-  const [robotChoice, setRobotChoice] = useState(selected?.robotId ?? "robot-02");
+  const [robotChoice, setRobotChoice] = useState(selected?.robotId ?? "robot-01");
   const [busy, setBusy] = useState(false);
 
   const run = async (action: () => Promise<void>) => {
@@ -35,7 +35,7 @@ export function Dispatch() {
         <div className="dispatch-filters"><button className="active">All</button><button>Approval</button><button>Assigned</button><button>In transit</button></div>
         <div className="dispatch-list">
           {queue.map((delivery) => (
-            <button key={delivery.id} className={`dispatch-list-item ${selected?.id === delivery.id ? "selected" : ""}`} onClick={() => { setSelectedId(delivery.id); setRobotChoice(delivery.robotId ?? "robot-02"); }}>
+            <button key={delivery.id} className={`dispatch-list-item ${selected?.id === delivery.id ? "selected" : ""}`} onClick={() => { setSelectedId(delivery.id); setRobotChoice(delivery.robotId ?? "robot-01"); }}>
               <div className="dispatch-list-top"><strong>{delivery.trackingCode}</strong><StatusPill value={delivery.priority} dot={false} /></div>
               <div className="dispatch-list-route"><i className="source-dot" />{getLocation(delivery.sourceId)?.shortName}<ArrowRight size={13} /><i className="destination-dot" />{getLocation(delivery.destinationId)?.shortName}</div>
               <div className="dispatch-list-bottom"><StatusPill value={delivery.status} /><span><Clock3 size={13} />{delivery.etaMinutes ?? 18} min</span></div>
