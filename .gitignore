@@ -8,6 +8,13 @@ robot-pi/__pycache__/
 robot-pi/*.py[cod]
 robot-pi/commands.db
 robot-pi/mission_request.json
+robot-pi/robot.env
+robot-pi/*.secret.env
+robot-pi/robot_state.json
+robot-pi/command-inbox/
+robot-pi/command-archive/
+robot-pi/event-outbox/
+robot-pi/event-archive/
 .wrangler/
 .dev.vars
 .dev.vars.*

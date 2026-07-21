@@ -1,4 +1,6 @@
 
+project_id = "miit-rover-integration"
+
 [functions.ingest-robot-message]
 enabled = true
 verify_jwt = false

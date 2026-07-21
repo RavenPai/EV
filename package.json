@@ -11,7 +11,13 @@
     "deploy:cloudflare": "npm run build:cloudflare && wrangler deploy",
     "preview": "vite preview",
     "check": "tsc -b --pretty false",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "test:pi": "python -m unittest discover -s robot-pi -p \"test_*.py\" -v",
+    "test:db": "supabase test db --local supabase/tests/database",
+    "test:emqx-contract": "node --test --test-concurrency=1 supabase/tests/integration/ingest-robot-message.test.mjs",
+    "test:integration": "node scripts/run-supabase-integration.mjs",
+    "lint:db": "supabase db lint --local --schema public --level error --fail-on error"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.53.0",

@@ -61,7 +61,11 @@ const optionalUuid = (value: unknown, field: string): string | null => {
   return asUuid(value, field);
 };
 
-const asTimestamp = (value: unknown, field = "at"): string => {
+const asTimestamp = (
+  value: unknown,
+  field = "at",
+  maximumAgeMs?: number,
+): string => {
   const text = asString(value, field);
   const timestamp = Date.parse(text);
   if (!Number.isFinite(timestamp)) {
@@ -69,6 +73,9 @@ const asTimestamp = (value: unknown, field = "at"): string => {
   }
   if (timestamp > Date.now() + 5 * 60_000) {
     throw new HttpError(400, `${field} is too far in the future`);
+  }
+  if (maximumAgeMs !== undefined && timestamp < Date.now() - maximumAgeMs) {
+    throw new HttpError(400, `${field} is too old`);
   }
   return new Date(timestamp).toISOString();
 };
@@ -187,7 +194,7 @@ Deno.serve(async (request) => {
     );
     const { data: robot, error: robotError } = await admin
       .from("robots")
-      .select("id, status, current_delivery_id")
+      .select("id, current_delivery_id")
       .eq("id", robotId)
       .maybeSingle();
     if (robotError) throw robotError;
@@ -256,7 +263,7 @@ Deno.serve(async (request) => {
 
       const { data, error } = await admin.rpc("apply_robot_state", {
         p_robot_id: robotId,
-        p_observed_at: asTimestamp(payload.at),
+        p_observed_at: asTimestamp(payload.at, "at", 60_000),
         p_status: status,
         p_mode: mode,
         p_battery: Math.round(asNumber(payload.battery, "battery", 0, 100)),
@@ -317,36 +324,19 @@ Deno.serve(async (request) => {
       if (typeof payload.online !== "boolean") {
         throw new HttpError(400, "online must be a boolean");
       }
-      if (payload.at !== undefined) asTimestamp(payload.at);
 
-      const now = new Date().toISOString();
-      const presencePatch: JsonObject = {
-        last_seen: now,
-        updated_at: now,
-      };
-      if (typeof payload.firmwareVersion === "string") {
-        presencePatch.firmware_version = payload.firmwareVersion.slice(0, 80);
-      }
-
-      if (payload.online) {
-        if (robot.status === "OFFLINE") {
-          presencePatch.status = robot.current_delivery_id ? "BUSY" : "ONLINE";
-        }
-      } else {
-        Object.assign(presencePatch, {
-          status: "OFFLINE",
-          speed_mps: 0,
-          signal: 0,
-          lidar: "OFFLINE",
-          camera: "OFFLINE",
-          esp32: "OFFLINE",
-        });
-      }
-
-      const { error } = await admin
-        .from("robots")
-        .update(presencePatch)
-        .eq("id", robotId);
+      // Presence is bridge connectivity, not operational telemetry. The RPC
+      // records it separately and fails the robot safe when telemetry expires.
+      // p_observed_at is required so out-of-order or replayed presence
+      // messages cannot move bridge_last_seen backwards.
+      const { error } = await admin.rpc("apply_robot_presence", {
+        p_robot_id: robotId,
+        p_online: payload.online,
+        p_firmware_version: typeof payload.firmwareVersion === "string"
+          ? payload.firmwareVersion.slice(0, 80)
+          : null,
+        p_observed_at: asTimestamp(payload.at),
+      });
       if (error) throw error;
     }
 
