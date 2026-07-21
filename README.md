@@ -169,8 +169,8 @@ npm run test:emqx-publish
 It verifies that only HTTP 200 is classified as delivered and that HTTP 202
 `no_matching_subscribers` cannot dispatch a delivery.
 
-The Supabase/EMQX integration suite requires Node.js 20, npm, Docker, and a
-running Docker daemon:
+The Supabase/EMQX integration suite requires Node.js 22 or newer, npm, Docker,
+and a running Docker daemon. CI uses the current Node.js 24 LTS line:
 
 ```bash
 npm run test:integration

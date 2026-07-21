@@ -1689,8 +1689,8 @@ the EMQX HTTP action sends. It covers all four ingestion topics, success paths,
 duplicate-message handling, identity mismatches, malformed payloads, invalid
 transitions, and authentication failures.
 
-The integration runner requires Node.js 20, npm, Docker, and a running Docker
-daemon. It starts local Supabase if needed, resets only the local database
+The integration runner requires Node.js 22 or newer, npm, Docker, and a running
+Docker daemon. It starts local Supabase if needed, resets only the local database
 while skipping the optional seed file, lints the schema, runs pgTAP, serves the
 ingestion function, and then runs the HTTP contract tests:
 
@@ -1698,9 +1698,8 @@ ingestion function, and then runs the HTTP contract tests:
 npm run test:integration
 ```
 
-As of the 21 July 2026 working-tree audit, this Docker-backed pgTAP/Edge
-Function suite had not yet been run with migration `011`; the migration and
-changed functions remain deployment-blocked until it passes.
+On 21 July 2026, this Docker-backed suite passed locally with migrations `001`
+through `011`, all 191 pgTAP assertions, and all 14 HTTP contract scenarios.
 
 Never point this reset workflow at a linked or production project. The runner
 checks that the Supabase API URL is a loopback address and uses a committed
@@ -2622,7 +2621,7 @@ definitive failures, and ambiguous/unrecognized statuses stay conservative.
 
 Prerequisites:
 
-- Node.js 20 and npm.
+- Node.js 22 or newer and npm; CI uses Node.js 24 LTS.
 - Docker with the daemon running.
 - Dependencies installed with `npm ci` or `npm install`.
 
@@ -2633,9 +2632,9 @@ npm run test:emqx-publish
 npm run test:integration
 ```
 
-Current status: the Docker-backed pgTAP and Edge Function run has not yet been
-completed with the local `011` migration. Fast tests are not a substitute for
-this deployment gate.
+Current status: the Docker-backed pgTAP and Edge Function suite passed locally
+on 21 July 2026 with migration `011`. Fast tests remain only one part of this
+deployment gate.
 
 The runner:
 
@@ -2661,8 +2660,8 @@ The temporary work directory isolates hosted-project metadata, but it does not
 create a new Docker namespace for every run.
 
 `.github/workflows/ci.yml` repeats the frontend checks and this integration
-suite on Ubuntu with Node.js 20. It has read-only repository permissions and
-does not receive Supabase or EMQX secrets.
+suite on Ubuntu with Node.js 24 LTS. It has read-only repository permissions
+and does not receive Supabase or EMQX secrets.
 
 ### 31.4 Raspberry Pi and ESP32 host tests
 
