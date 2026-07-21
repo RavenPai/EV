@@ -312,7 +312,9 @@ def close_esp32() -> None:
 
 
 def send_to_esp32(command: str) -> None:
-    frame = {"v": 1, "cmd": command, "ttlMs": 300 if command == "STOP" else 2000}
+    frame: dict[str, object] = {"v": 1, "cmd": command}
+    if command != "ESTOP":
+        frame["ttlMs"] = 300 if command == "STOP" else 2000
     try:
         link = ensure_esp32()
         ready_delay = max(0.0, esp32_ready_at - time.monotonic())
@@ -568,7 +570,7 @@ def on_message(
                 {"physicalConfirmation": False, "phase": "requested"},
                 command_id=command_id,
             )
-            send_to_esp32("STOP")
+            send_to_esp32("ESTOP")
             write_mission_request("ESTOP", command_id)
         elif command == "PAUSE":
             send_to_esp32("STOP")
