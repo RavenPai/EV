@@ -39,6 +39,24 @@ Depends on: Laptop Step L3.
 The current running files were installed directly from the laptop working tree,
 so the older Pi Git checkout is intentionally dirty.
 
+Laptop Step L3 comparison baseline (SHA-256) for implementation commit
+`4f77166dc7e78ff366ec5c71435d034b44fa2594`:
+
+| File | Expected SHA-256 |
+| --- | --- |
+| `robot-pi/agent.py` | `b79f87a22e3f8dc1f2d0cbb07e035878b5e62e3366549952822519730ea744da` |
+| `robot-pi/local_store.py` | `7fe1c6d841469de570d474265c572279b7ee50e1972d3ba564c2d0dc31a75182` |
+| `robot-pi/message_contract.py` | `2b3abba6ace17fc33f8d6ca700bc3de473c6657461471166add5282f0d0914c5` |
+| `robot-pi/miit-rover-agent.service` | `082776694e6ab09edd401aa43f20cd2dbef7db5e809c82d2d5fc005842522008` |
+| `robot-pi/requirements.txt` | `a8e8a737ade78e28ceba50a441fdd77a50e1651d5dd64b34ab293a2d1b1bdef0` |
+| `robot-pi/robot.env.example` | `d408b79de63cc864d56f45a1890b5b338019a1f97a2219452fcfc9426b1df5a6` |
+| `robot-pi/test_agent.py` | `eeb87c25a034d5d4940fd0c2e64f1c25e159af46ceb55f241f0c30c31e9bb2b6` |
+| `robot-pi/test_local_store.py` | `5e5c6bce737e62f860038ac9bb4b4625f0050876eca9555e1e880900d8ecd2a8` |
+| `robot-pi/test_message_contract.py` | `8b29b1b0f1684b8edd6f57cc71ca870d1ffa8bba86e30e30c918dd76b234ae02` |
+
+These are comparison inputs, not proof of the Pi's present state. Recompute the
+installed hashes on the Pi before changing its checkout or deployed files.
+
 - [ ] Fetch the pushed commit without overwriting the running deployment.
 - [ ] Compare the committed bridge files with the installed file hashes.
 - [ ] Preserve the root-only rollback backup.

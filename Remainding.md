@@ -21,9 +21,10 @@ device identifiers into this file, Git, screenshots, SQL results, or logs.
 - The Cloudflare frontend is already deployed.
 - The Raspberry Pi bridge is deployed as `pi-agent-1.3.0`.
 - The historical Step 13.2 controlled command handoff is recorded as done.
-- The current EV working tree contains reviewed but uncommitted changes.
-- Local validation Steps L1-L2 passed on 21 July 2026, including the
-  Docker-backed Supabase/Edge Function integration suite.
+- The reviewed implementation snapshot is committed and pushed through
+  `4f77166dc7e78ff366ec5c71435d034b44fa2594`.
+- Local validation Steps L1-L3 passed on 21 July 2026, including the
+  Docker-backed Supabase/Edge Function integration suite and GitHub CI.
 - The pending cloud migrations/functions and hardened EMQX path are not yet
   deployed and verified as one current stack.
 
@@ -92,8 +93,11 @@ Pass evidence:
 
 ### Step L3 — Commit and push the tested snapshot
 
-Review before staging; do not use a broad add command without checking every
-new file.
+- [x] Review every candidate path and stage only the explicit manifest.
+- [x] Commit and push the tested snapshot to `origin/main`.
+- [x] Wait for every required GitHub Actions job to complete successfully.
+
+Commands used:
 
 ```powershell
 git status --short
@@ -108,12 +112,19 @@ git push origin main
 
 Pass evidence:
 
-- The pushed commit contains no secrets or generated runtime data.
-- GitHub Actions passes the frontend, Pi/ESP32, EMQX-response, and isolated
-  Supabase jobs.
-- The committed Pi bridge hashes and the currently installed bundle hashes are
-  recorded for Step P1. A documented safe mismatch does not block this commit;
-  Step P1 resolves it through comparison or a controlled install.
+- Completed 21 July 2026. The reviewed snapshot was committed as
+  `3f43786d2a729a8b30752befd5102b89025d3253`; the supported-Node CI correction
+  produced the final implementation commit
+  `4f77166dc7e78ff366ec5c71435d034b44fa2594`.
+- The pushed commits contain no detected secret or generated runtime data.
+- [GitHub Actions CI #5](https://github.com/RavenPai/EV/actions/runs/29852261556)
+  completed successfully for the frontend, Raspberry Pi/ESP32,
+  EMQX-response, and isolated Supabase/EMQX checks.
+- The Node.js 24 validation repeated 12 frontend tests, TypeScript checking,
+  the production build, 1 EMQX publish-response test, all 191 pgTAP
+  assertions, and all 14 webhook contract scenarios successfully.
+- The committed Pi bundle comparison hashes are recorded in Step P1. The live
+  recheck and safe checkout reconciliation intentionally remain Pi Step P1.
 
 Pi dependency: after this step, complete Step P1 in
 `RemaindingRaspberryPi.md` before a future Pi pull.
