@@ -77,7 +77,13 @@ class CommandInboxTests(unittest.TestCase):
             inbox = Path(temporary)
             interrupted = inbox / f"{FIRST_ID}.json.tmp"
             interrupted.write_text(
-                json.dumps({"commandId": FIRST_ID, "type": "PAUSE"}),
+                json.dumps(
+                    {
+                        "commandId": FIRST_ID,
+                        "type": "PAUSE",
+                        "requestedAt": "2026-07-21T02:30:00+00:00",
+                    }
+                ),
                 encoding="utf-8",
             )
 

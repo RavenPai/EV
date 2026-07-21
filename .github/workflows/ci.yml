@@ -37,6 +37,9 @@ jobs:
       - name: Run Pi contract tests
         run: python -m unittest discover -s robot-pi -p "test_*.py" -v
 
+      - name: Run ESP32 host protocol tests
+        run: python -m unittest discover -s MIIT_Rover_ESP32_Firmware_v0.2.0/robot-esp32/tests -p "test_*.py" -v
+
   frontend:
     name: Frontend checks
     runs-on: ubuntu-latest
@@ -81,6 +84,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Test EMQX publish response handling
+        run: npm run test:emqx-publish
 
       - name: Run local integration suite
         run: npm run test:integration

@@ -4,9 +4,13 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from message_contract import (
+    command_event_id,
     event_order_key,
+    prepare_ack_payload,
+    prepare_command_envelope,
     prepare_event_payload,
     prepare_state_payload,
+    validate_command_transport,
     validate_robot_id,
 )
 
@@ -43,6 +47,144 @@ class RobotIdentityTests(unittest.TestCase):
             with self.subTest(invalid=invalid):
                 with self.assertRaises(ValueError):
                     validate_robot_id(invalid)
+
+
+class CommandContractTests(unittest.TestCase):
+    def valid_command(self, **overrides):
+        envelope = {
+            "schemaVersion": 1,
+            "commandId": COMMAND_ID,
+            "robotId": "robot-01",
+            "command": "START_MISSION",
+            "payload": {
+                "sourceLocationId": "loc-fcs",
+                "destinationLocationId": "loc-library",
+                "mapVersion": "miit-campus-v1",
+                "deliveryId": DELIVERY_ID,
+            },
+            "issuedAt": NOW.isoformat(),
+            "expiresAt": (NOW + timedelta(minutes=5)).isoformat(),
+        }
+        envelope.update(overrides)
+        return envelope
+
+    def test_command_contract_normalizes_a_valid_mission(self):
+        envelope, issued_at, expires_at = prepare_command_envelope(
+            self.valid_command(),
+            robot_id="robot-01",
+            now=NOW,
+        )
+        self.assertEqual(envelope["commandId"], COMMAND_ID)
+        self.assertEqual(envelope["payload"]["deliveryId"], DELIVERY_ID)
+        self.assertEqual((expires_at - issued_at).total_seconds(), 300)
+
+    def test_expired_duplicate_can_be_identified_before_rejection(self):
+        envelope, _issued_at, expires_at = prepare_command_envelope(
+            self.valid_command(
+                issuedAt=(NOW - timedelta(minutes=10)).isoformat(),
+                expiresAt=(NOW - timedelta(minutes=5)).isoformat(),
+            ),
+            robot_id="robot-01",
+            now=NOW,
+        )
+        self.assertEqual(envelope["commandId"], COMMAND_ID)
+        self.assertLess(expires_at, NOW)
+
+    def test_command_contract_rejects_unbounded_or_ambiguous_input(self):
+        invalid_commands = [
+            self.valid_command(expiresAt=(NOW + timedelta(minutes=6)).isoformat()),
+            {**self.valid_command(), "unexpected": True},
+            self.valid_command(
+                payload={
+                    **self.valid_command()["payload"],
+                    "unexpected": True,
+                }
+            ),
+            self.valid_command(robotId="robot-02"),
+            self.valid_command(command="DRIVE_FORWARD"),
+            self.valid_command(
+                command="PAUSE",
+                payload={"reason": "x" * 241},
+                expiresAt=(NOW + timedelta(minutes=5)).isoformat(),
+            ),
+        ]
+        for command in invalid_commands:
+            with self.subTest(command=command):
+                with self.assertRaises(ValueError):
+                    prepare_command_envelope(
+                        command,
+                        robot_id="robot-01",
+                        now=NOW,
+                    )
+
+    def test_ack_contract_validates_status_and_identity(self):
+        payload = prepare_ack_payload(
+            robot_id="robot-01",
+            command_id=COMMAND_ID,
+            status="ACKNOWLEDGED",
+            reason="accepted",
+            at=NOW.isoformat(),
+            now=NOW,
+        )
+        self.assertEqual(payload["status"], "ACKNOWLEDGED")
+        self.assertEqual(payload["commandId"], COMMAND_ID)
+
+        with self.assertRaises(ValueError):
+            prepare_ack_payload(
+                robot_id="robot-01",
+                command_id=COMMAND_ID,
+                status="PUBLISHED",
+                at=NOW.isoformat(),
+                now=NOW,
+            )
+
+        for invalid_status in ([], None, 1):
+            with self.subTest(invalid_status=invalid_status):
+                with self.assertRaises(ValueError):
+                    prepare_ack_payload(
+                        robot_id="robot-01",
+                        command_id=COMMAND_ID,
+                        status=invalid_status,
+                        at=NOW.isoformat(),
+                        now=NOW,
+                    )
+
+        for invalid_timestamp in (False, 0, ""):
+            with self.subTest(invalid_timestamp=invalid_timestamp):
+                with self.assertRaises(ValueError):
+                    prepare_ack_payload(
+                        robot_id="robot-01",
+                        command_id=COMMAND_ID,
+                        status="ACKNOWLEDGED",
+                        at=invalid_timestamp,
+                        now=NOW,
+                    )
+
+    def test_command_transport_rejects_qos_zero_retained_and_wrong_topic(self):
+        validate_command_transport(
+            topic="miit/robots/robot-01/commands",
+            expected_topic="miit/robots/robot-01/commands",
+            qos=1,
+            retain=False,
+        )
+        invalid = [
+            {"topic": "miit/robots/robot-02/commands", "qos": 1, "retain": False},
+            {"topic": "miit/robots/robot-01/commands", "qos": 0, "retain": False},
+            {"topic": "miit/robots/robot-01/commands", "qos": 1, "retain": True},
+        ]
+        for transport in invalid:
+            with self.subTest(transport=transport):
+                with self.assertRaises(ValueError):
+                    validate_command_transport(
+                        expected_topic="miit/robots/robot-01/commands",
+                        **transport,
+                    )
+
+    def test_command_event_identity_is_stable(self):
+        first = command_event_id(COMMAND_ID, "ESTOP_TRIGGERED")
+        second = command_event_id(COMMAND_ID, "ESTOP_TRIGGERED")
+        self.assertEqual(first, second)
+        self.assertNotEqual(first, command_event_id(COMMAND_ID, "BRIDGE_FAULT"))
 
 
 class StateContractTests(unittest.TestCase):
@@ -85,6 +227,8 @@ class StateContractTests(unittest.TestCase):
             valid_state(status="READY"),
             valid_state(mode="DRIVING"),
             valid_state(battery=101),
+            valid_state(battery=82.5),
+            valid_state(signal=90.5),
             valid_state(speedMps=-0.1),
             valid_state(esp32="UNKNOWN"),
             valid_state(currentDeliveryId="not-a-uuid"),
@@ -155,6 +299,7 @@ class EventContractTests(unittest.TestCase):
     def test_event_rejects_values_the_ingestion_function_would_reject(self):
         invalid_events = [
             {"type": "MISSION_STARTED", "severity": "INFO"},
+            {"type": "RESUMED", "severity": "INFO"},
             {
                 "eventId": EVENT_ID,
                 "deliveryId": DELIVERY_ID,

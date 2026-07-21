@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -26,13 +26,39 @@ const testEnvFile = path.join(
   "robot-ingest.test.env",
 );
 const ingestSecret = "local-integration-secret-not-for-production";
+const supabaseConfig = readFileSync(
+  path.join(root, "supabase", "config.toml"),
+  "utf8",
+);
+const projectId = supabaseConfig.match(
+  /^\s*project_id\s*=\s*"([^"]+)"/m,
+)?.[1];
+if (!projectId) {
+  throw new Error("supabase/config.toml is missing project_id.");
+}
+
+// The production migration deliberately limits service_role to the operations
+// used by Edge Functions. This disposable, loopback-only test also needs extra
+// setup/cleanup authority; apply it after pgTAP so production ACL assertions
+// run against the real migration state.
+const integrationFixtureGrants = `
+grant update on table public.profiles, public.robots to service_role;
+grant update, delete on table public.deliveries to service_role;
+grant delete on table public.robot_commands to service_role;
+grant select, delete on table
+  public.robot_events,
+  public.notifications
+to service_role;
+`;
 const excludedServices = [
   "imgproxy",
   "logflare",
   "mailpit",
+  "postgres-meta",
   "realtime",
   "storage-api",
   "studio",
+  "supavisor",
   "vector",
 ].join(",");
 
@@ -100,6 +126,24 @@ const findStatusValue = (value, acceptedKeys) => {
   return undefined;
 };
 
+const assertServiceRoleCredential = (credential) => {
+  const parts = credential.split(".");
+  if (parts.length !== 3) return;
+
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+  } catch {
+    throw new Error("Supabase status returned a malformed service-role JWT.");
+  }
+  if (payload.role !== "service_role") {
+    throw new Error(
+      `Supabase status returned a ${String(payload.role)} key instead of ` +
+        "SERVICE_ROLE_KEY.",
+    );
+  }
+};
+
 const readLocalStatus = () => {
   const output = runSupabase(["status", "-o", "json"], {
     capture: true,
@@ -109,26 +153,47 @@ const readLocalStatus = () => {
   if (jsonStart < 0) throw new Error("Supabase status did not return JSON.");
   const status = JSON.parse(output.slice(jsonStart));
   const apiUrl = findStatusValue(status, ["apiurl"]);
-  const anonKey = findStatusValue(status, [
-    "anonkey",
-    "publishablekey",
-    "publishable",
-  ]);
-  const serviceRoleKey = findStatusValue(status, [
-    "servicerolekey",
-    "servicekey",
-    "secretkey",
-  ]);
+  const anonKey =
+    findStatusValue(status, ["anonkey"]) ??
+    findStatusValue(status, ["publishablekey", "publishable"]);
+  const serviceRoleKey =
+    findStatusValue(status, ["servicerolekey"]) ??
+    findStatusValue(status, ["servicekey"]) ??
+    findStatusValue(status, ["secretkey"]);
   if (!apiUrl || !anonKey || !serviceRoleKey) {
     throw new Error(
       "Supabase status is missing API_URL, ANON_KEY, or SERVICE_ROLE_KEY.",
     );
   }
+  assertServiceRoleCredential(serviceRoleKey);
   const hostname = new URL(apiUrl).hostname;
   if (!["127.0.0.1", "localhost", "::1", "[::1]"].includes(hostname)) {
     throw new Error(`Refusing to test against non-local Supabase URL: ${apiUrl}`);
   }
   return { apiUrl, anonKey, serviceRoleKey };
+};
+
+const findLocalDatabaseContainer = () => {
+  const output = run(
+    "docker",
+    [
+      "ps",
+      "--filter",
+      `label=com.supabase.cli.project=${projectId}`,
+      "--filter",
+      "name=supabase_db_",
+      "--format",
+      "{{.Names}}",
+    ],
+    { capture: true, timeout: 30_000 },
+  );
+  const containers = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (containers.length !== 1) {
+    throw new Error(
+      `Expected one local Supabase database container; found ${containers.length}.`,
+    );
+  }
+  return containers[0];
 };
 
 const localStackRunning = () => {
@@ -274,6 +339,26 @@ try {
 
   const { apiUrl, anonKey, serviceRoleKey } = readLocalStatus();
   const functionUrl = `${apiUrl}/functions/v1/ingest-robot-message`;
+
+  console.log("Granting disposable integration-fixture privileges...");
+  run(
+    "docker",
+    [
+      "exec",
+      findLocalDatabaseContainer(),
+      "psql",
+      "-U",
+      "postgres",
+      "-d",
+      "postgres",
+      "-X",
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-c",
+      integrationFixtureGrants,
+    ],
+    { capture: true, timeout: 30_000 },
+  );
 
   console.log("Starting the local robot-ingestion Edge Function...");
   functionServer = spawn(

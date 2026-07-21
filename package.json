@@ -14,7 +14,9 @@
     "test": "vitest run",
     "test:unit": "vitest run",
     "test:pi": "python -m unittest discover -s robot-pi -p \"test_*.py\" -v",
+    "test:esp32": "python -m unittest discover -s MIIT_Rover_ESP32_Firmware_v0.2.0/robot-esp32/tests -p \"test_*.py\" -v",
     "test:db": "supabase test db --local supabase/tests/database",
+    "test:emqx-publish": "node --test supabase/tests/integration/emqx-publish-response.test.mjs",
     "test:emqx-contract": "node --test --test-concurrency=1 supabase/tests/integration/ingest-robot-message.test.mjs",
     "test:integration": "node scripts/run-supabase-integration.mjs",
     "lint:db": "supabase db lint --local --schema public --level error --fail-on error"

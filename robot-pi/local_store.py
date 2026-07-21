@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -19,8 +20,9 @@ def _fsync_directory(directory: Path) -> None:
         os.fsync(directory_fd)
     except OSError:
         # Windows does not permit fsync on a directory. The deployed Linux Pi
-        # does, and file data is still fsynced before every atomic replace.
-        pass
+        # does. Do not hide a Linux storage failure behind portability logic.
+        if sys.platform != "win32":
+            raise
     finally:
         if directory_fd is not None:
             os.close(directory_fd)
@@ -36,7 +38,7 @@ def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(f"{path.suffix}.tmp")
     with temporary.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, separators=(",", ":"))
+        json.dump(payload, handle, separators=(",", ":"), allow_nan=False)
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
@@ -59,6 +61,7 @@ def enqueue_command_request(
     command_id: str,
     requested_at: str,
     payload: dict[str, Any] | None = None,
+    archive: Path | None = None,
 ) -> Path:
     """Persist one command per file so a newer request cannot overwrite it."""
 
@@ -76,8 +79,13 @@ def enqueue_command_request(
         "requestedAt": normalized_at,
     }
     path = inbox / f"{normalized_id}.json"
-    if path.exists():
-        existing = json.loads(path.read_text(encoding="utf-8"))
+    candidates = [path]
+    if archive is not None:
+        candidates.append(archive / path.name)
+    for existing_path in candidates:
+        if not existing_path.exists():
+            continue
+        existing = json.loads(existing_path.read_text(encoding="utf-8"))
         existing_identity = {
             key: value for key, value in existing.items() if key != "requestedAt"
         }
@@ -86,7 +94,7 @@ def enqueue_command_request(
         }
         if existing_identity != request_identity:
             raise ValueError("command inbox contains a conflicting commandId")
-        return path
+        return existing_path
 
     write_json_atomic(path, request)
     return path
@@ -103,7 +111,7 @@ def recover_atomic_json_files(directory: Path) -> None:
             continue
         try:
             payload = json.loads(temporary.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (UnicodeError, RecursionError, json.JSONDecodeError):
             move_file_durable(temporary, temporary.with_suffix(".bad"))
             continue
         if not isinstance(payload, dict):

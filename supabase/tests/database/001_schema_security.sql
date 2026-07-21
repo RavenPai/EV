@@ -3,7 +3,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions;
 
-select plan(25);
+select plan(37);
 
 select has_table(
   'public',
@@ -113,6 +113,24 @@ select ok(
 select ok(
   has_function_privilege(
     'service_role',
+    'public.apply_robot_state_observed(text,timestamptz,timestamptz,text,text,integer,integer,numeric,text,uuid,text,text,text,numeric,text)',
+    'EXECUTE'
+  ),
+  'the service role can apply broker-ordered robot state'
+);
+
+select ok(
+  not has_function_privilege(
+    'authenticated',
+    'public.apply_robot_state_observed(text,timestamptz,timestamptz,text,text,integer,integer,numeric,text,uuid,text,text,text,numeric,text)',
+    'EXECUTE'
+  ),
+  'authenticated clients cannot apply broker-ordered robot state directly'
+);
+
+select ok(
+  has_function_privilege(
+    'service_role',
     'public.apply_robot_event(uuid,text,uuid,uuid,text,text,jsonb,timestamptz)',
     'EXECUTE'
   ),
@@ -144,6 +162,82 @@ select ok(
     'EXECUTE'
   ),
   'authenticated clients cannot expire robot commands'
+);
+
+select ok(
+  has_function_privilege(
+    'service_role',
+    'public.apply_robot_ack(uuid,text,text,text,timestamp with time zone)',
+    'EXECUTE'
+  ),
+  'the service role can apply robot acknowledgements'
+);
+
+select ok(
+  not has_function_privilege(
+    'authenticated',
+    'public.apply_robot_ack(uuid,text,text,text,timestamp with time zone)',
+    'EXECUTE'
+  ),
+  'authenticated clients cannot apply robot acknowledgements directly'
+);
+
+select ok(
+  has_function_privilege(
+    'service_role',
+    'public.resolve_unknown_robot_command(uuid,uuid,text)',
+    'EXECUTE'
+  ),
+  'the service role can reconcile an unknown command publish outcome'
+);
+
+select ok(
+  not has_function_privilege(
+    'authenticated',
+    'public.resolve_unknown_robot_command(uuid,uuid,text)',
+    'EXECUTE'
+  ),
+  'authenticated clients cannot call publish reconciliation directly'
+);
+
+select ok(
+  has_function_privilege(
+    'service_role',
+    'public.finalize_robot_command_publish(uuid,text,uuid,timestamp with time zone)',
+    'EXECUTE'
+  ),
+  'the service role can atomically finalize command publication'
+);
+
+select ok(
+  not has_function_privilege(
+    'authenticated',
+    'public.finalize_robot_command_publish(uuid,text,uuid,timestamp with time zone)',
+    'EXECUTE'
+  ),
+  'authenticated clients cannot finalize command publication directly'
+);
+
+select has_column(
+  'public',
+  'robots',
+  'telemetry_received_at',
+  'robots record a trusted telemetry receipt timestamp'
+);
+
+select ok(
+  has_table_privilege('authenticated', 'public.robots', 'SELECT'),
+  'authenticated users can still read robot state through RLS'
+);
+
+select ok(
+  not has_table_privilege('anon', 'public.robots', 'SELECT'),
+  'anonymous users cannot read robot state'
+);
+
+select ok(
+  not has_table_privilege('authenticated', 'public.robots', 'UPDATE'),
+  'authenticated users cannot bypass ingestion with direct robot updates'
 );
 
 select ok(

@@ -219,7 +219,7 @@ const actionBody = (
     clientid = `${TEST_ROBOT_ID}-pi`,
     qos = 1,
     timestamp = Date.now(),
-    mqttMessageId = randomUUID(),
+    mqttMessageId = randomUUID().replaceAll("-", ""),
   } = {},
 ) => ({
   mqttMessageId,
@@ -255,10 +255,13 @@ const robotRestorePatch = (snapshot) => ({
   current_delivery_id: snapshot.current_delivery_id,
   last_seen: snapshot.last_seen,
   telemetry_at: snapshot.telemetry_at,
+  telemetry_received_at: snapshot.telemetry_received_at,
   firmware_version: snapshot.firmware_version,
   bridge_last_seen: snapshot.bridge_last_seen,
   bridge_online: snapshot.bridge_online,
   control_event_at: snapshot.control_event_at,
+  control_event_received_at: snapshot.control_event_received_at,
+  safety_latched_at: snapshot.safety_latched_at,
 });
 
 test(
@@ -345,6 +348,107 @@ test(
       };
 
       if (robotSnapshot) {
+        await attempt("clear fixture safety latch", async () => {
+          const currentRobot = requireData(
+            await admin
+              .from("robots")
+              .select("*")
+              .eq("id", TEST_ROBOT_ID)
+              .single(),
+            "read robot safety latch during cleanup",
+          );
+          if (
+            !["ESTOP", "FAULT"].includes(currentRobot.mode) ||
+            ["ESTOP", "FAULT"].includes(robotSnapshot.mode)
+          ) {
+            return;
+          }
+
+          const cleanupCommandId = randomUUID();
+          const cleanupEventId = randomUUID();
+          commandIds.add(cleanupCommandId);
+          eventMessageIds.add(cleanupEventId);
+          const controlTime = currentRobot.control_event_at
+            ? new Date(currentRobot.control_event_at).getTime()
+            : 0;
+          const latchTime = currentRobot.safety_latched_at
+            ? new Date(currentRobot.safety_latched_at).getTime()
+            : 0;
+          const telemetryTime = currentRobot.telemetry_at
+            ? new Date(currentRobot.telemetry_at).getTime()
+            : 0;
+          const bridgeTime = currentRobot.bridge_last_seen
+            ? new Date(currentRobot.bridge_last_seen).getTime()
+            : 0;
+          const safeStateTime = Math.max(Date.now(), telemetryTime + 1);
+          const safeBridgeTime = Math.max(Date.now(), bridgeTime + 1);
+
+          requireData(
+            await admin.rpc("apply_robot_state_observed", {
+              p_robot_id: TEST_ROBOT_ID,
+              p_observed_at: new Date(safeStateTime).toISOString(),
+              p_broker_observed_at: new Date(safeBridgeTime).toISOString(),
+              p_status: "FAULT",
+              p_mode: currentRobot.mode,
+              p_battery: Math.max(Number(currentRobot.battery) || 0, 20),
+              p_signal: Math.max(Number(currentRobot.signal) || 0, 1),
+              p_speed_mps: 0,
+              p_location_id: currentRobot.location_id ?? "loc-home",
+              p_current_delivery_id: null,
+              p_lidar: "OK",
+              p_camera: "OK",
+              p_esp32: "OK",
+              p_motor_temp_c: Number(currentRobot.motor_temp_c) || 30,
+              p_firmware_version: currentRobot.firmware_version ??
+                "integration-cleanup",
+            }),
+            "record fresh safe state before cleanup RESUME",
+          );
+
+          const issuedTime = Math.max(
+            Date.now(),
+            controlTime + 1,
+            latchTime + 1,
+          );
+          const resetTime = Math.max(issuedTime + 1, safeStateTime + 1);
+          const issuedAt = new Date(issuedTime).toISOString();
+          const resetAt = new Date(resetTime).toISOString();
+
+          requireData(
+            await admin.from("robot_commands").insert({
+              id: cleanupCommandId,
+              robot_id: TEST_ROBOT_ID,
+              command_type: "RESUME",
+              payload: {
+                source: "integration-cleanup",
+                localSafetyChecksPassed: true,
+              },
+              status: "PUBLISHED",
+              issued_by: authUserId,
+              issued_at: issuedAt,
+              published_at: issuedAt,
+              expires_at: new Date(resetTime + 5 * 60_000).toISOString(),
+            }),
+            "create cleanup RESUME command",
+          );
+          requireData(
+            await admin.rpc("apply_robot_event", {
+              p_message_id: cleanupEventId,
+              p_robot_id: TEST_ROBOT_ID,
+              p_delivery_id: null,
+              p_command_id: cleanupCommandId,
+              p_event_type: "RESUMED",
+              p_severity: "INFO",
+              p_payload: {
+                source: "integration-cleanup",
+                localSafetyChecksPassed: true,
+              },
+              p_occurred_at: resetAt,
+            }),
+            "clear robot safety latch during cleanup",
+          );
+        });
+
         await attempt("restore robot-01", async () => {
           requireData(
             await admin
@@ -369,6 +473,19 @@ test(
               .delete()
               .in("delivery_id", fixtureDeliveryIds),
             "remove fixture notifications",
+          );
+        });
+
+        // Presence/offline and expiry workflows create trusted system events
+        // without an MQTT message_id. Remove those by fixture delivery before
+        // deleting the delivery rows they reference.
+        await attempt("remove delivery-scoped robot events", async () => {
+          requireData(
+            await admin
+              .from("robot_events")
+              .delete()
+              .in("delivery_id", fixtureDeliveryIds),
+            "remove delivery-scoped robot events",
           );
         });
       }
@@ -438,10 +555,13 @@ test(
             mode: "IDLE",
             current_delivery_id: null,
             speed_mps: 0,
-            telemetry_at: null,
-            bridge_last_seen: null,
-            bridge_online: false,
+            telemetry_at: new Date().toISOString(),
+            telemetry_received_at: new Date().toISOString(),
+            bridge_last_seen: new Date().toISOString(),
+            bridge_online: true,
             control_event_at: null,
+            control_event_received_at: null,
+            safety_latched_at: null,
             last_seen: new Date().toISOString(),
           })
           .eq("id", TEST_ROBOT_ID),
@@ -461,6 +581,13 @@ test(
         "create fixture auth user",
       );
       authUserId = createdUser.user.id;
+      requireData(
+        await admin
+          .from("profiles")
+          .update({ role: "OPERATOR" })
+          .eq("id", authUserId),
+        "promote fixture user to operator",
+      );
 
       const signInClient = createClient(
         configuration.url,
@@ -516,9 +643,13 @@ test(
       const commandId = randomUUID();
       const completionCommandId = randomUUID();
       const otherRobotCommandId = randomUUID();
+      const resumeCommandId = randomUUID();
+      const oldResumeCommandId = randomUUID();
       commandIds.add(commandId);
       commandIds.add(completionCommandId);
       commandIds.add(otherRobotCommandId);
+      commandIds.add(resumeCommandId);
+      commandIds.add(oldResumeCommandId);
       const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
       const issuedAt = new Date().toISOString();
 
@@ -606,6 +737,29 @@ test(
 
           const after = await readRobot();
           assert.equal(after.last_seen, before.last_seen);
+        },
+      );
+
+      await t.test(
+        "enforces the exact EMQX action envelope and QoS 1",
+        async () => {
+          const message = actionBody("presence", presencePayload());
+          const extraField = await expectStatus(
+            { ...message, unexpected: true },
+            400,
+          );
+          assert.match(extraField.error, /unsupported fields/i);
+
+          const missingMessageId = { ...message };
+          delete missingMessageId.mqttMessageId;
+          const missingField = await expectStatus(missingMessageId, 400);
+          assert.match(missingField.error, /missing/i);
+
+          const wrongQos = await expectStatus(
+            actionBody("presence", presencePayload(), { qos: 0 }),
+            400,
+          );
+          assert.match(wrongQos.error, /QoS 1/i);
         },
       );
 
@@ -701,18 +855,20 @@ test(
       );
 
       await t.test(
-        "persists a valid command acknowledgement and heartbeat",
+        "persists a valid command acknowledgement without faking telemetry",
         async () => {
+          const robotBefore = await readRobot();
           const acknowledgedAt = new Date().toISOString();
+          const acknowledgementPayload = {
+            schemaVersion: 1,
+            commandId,
+            robotId: TEST_ROBOT_ID,
+            status: "ACKNOWLEDGED",
+            reason: "accepted by integration rover",
+            at: acknowledgedAt,
+          };
           const response = await expectStatus(
-            actionBody("acks", {
-              schemaVersion: 1,
-              commandId,
-              robotId: TEST_ROBOT_ID,
-              status: "ACKNOWLEDGED",
-              reason: "accepted by integration rover",
-              at: acknowledgedAt,
-            }),
+            actionBody("acks", acknowledgementPayload),
             200,
           );
           assert.deepEqual(
@@ -751,8 +907,15 @@ test(
             new Date(acknowledgedAt).getTime(),
           );
 
+          const duplicate = await expectStatus(
+            actionBody("acks", acknowledgementPayload),
+            200,
+          );
+          assert.equal(duplicate.duplicate, true);
+
           const robot = await readRobot();
-          assert.ok(new Date(robot.last_seen).getTime() >= Date.now() - 15_000);
+          assert.equal(robot.last_seen, robotBefore.last_seen);
+          assert.equal(robot.telemetry_at, robotBefore.telemetry_at);
         },
       );
 
@@ -795,7 +958,13 @@ test(
       await t.test(
         "persists valid telemetry and rejects an older state sample as stale",
         async () => {
-          acceptedTelemetryAt = new Date(Date.now() - 2_000).toISOString();
+          const previousRobot = await readRobot();
+          const previousTelemetryAt = previousRobot.telemetry_at
+            ? new Date(previousRobot.telemetry_at).getTime()
+            : 0;
+          acceptedTelemetryAt = new Date(
+            Math.max(Date.now(), previousTelemetryAt + 1),
+          ).toISOString();
           const state = {
             schemaVersion: 1,
             robotId: TEST_ROBOT_ID,
@@ -838,6 +1007,12 @@ test(
             new Date(current.telemetry_at).getTime(),
             new Date(acceptedTelemetryAt).getTime(),
           );
+          const acceptedReceiptAt = current.telemetry_received_at;
+          assert.ok(acceptedReceiptAt);
+          assert.ok(
+            Math.abs(Date.now() - new Date(acceptedReceiptAt).getTime()) <
+              15_000,
+          );
 
           const staleTelemetryAt = new Date(
             new Date(acceptedTelemetryAt).getTime() - 10_000,
@@ -865,6 +1040,10 @@ test(
           assert.equal(
             new Date(afterStale.telemetry_at).getTime(),
             new Date(acceptedTelemetryAt).getTime(),
+          );
+          assert.equal(
+            afterStale.telemetry_received_at,
+            acceptedReceiptAt,
           );
 
           const tooOld = await expectStatus(
@@ -945,8 +1124,15 @@ test(
       const invalidMissionEventId = randomUUID();
       eventMessageIds.add(invalidMissionEventId);
       await t.test(
-        "rolls back MISSION_STARTED when the delivery has not been dispatched",
+        "rolls back MISSION_STARTED when its mission command is not active",
         async () => {
+          requireData(
+            await admin
+              .from("robot_commands")
+              .update({ status: "FAILED" })
+              .eq("id", commandId),
+            "fail mission command for rejection fixture",
+          );
           const rejected = await expectStatus(
             actionBody("events", {
               schemaVersion: 1,
@@ -961,7 +1147,7 @@ test(
             }),
             409,
           );
-          assert.match(rejected.error, /current delivery state/i);
+          assert.match(rejected.error, /valid START_MISSION command/i);
 
           const eventResult = await admin
             .from("robot_events")
@@ -980,25 +1166,22 @@ test(
             "read delivery after rejected mission event",
           );
           assert.equal(delivery.status, "ASSIGNED");
+
+          requireData(
+            await admin
+              .from("robot_commands")
+              .update({ status: "ACKNOWLEDGED" })
+              .eq("id", commandId),
+            "restore active mission command fixture",
+          );
         },
       );
 
       const missionStartedEventId = randomUUID();
       eventMessageIds.add(missionStartedEventId);
       await t.test(
-        "advances a dispatched delivery only after a valid robot mission event",
+        "lets valid robot evidence win the ASSIGNED-to-publish response race",
         async () => {
-          requireData(
-            await admin
-              .from("deliveries")
-              .update({
-                status: "DISPATCHED",
-                dispatched_at: new Date().toISOString(),
-              })
-              .eq("id", deliveryId),
-            "mark fixture delivery dispatched",
-          );
-
           const accepted = await expectStatus(
             actionBody("events", {
               schemaVersion: 1,
@@ -1038,6 +1221,7 @@ test(
       await t.test(
         "uses presence for connectivity without clearing operational OFFLINE state",
         async () => {
+          const presenceBrokerTime = Date.now() + 1_000;
           const offline = await expectStatus(
             actionBody(
               "presence",
@@ -1045,11 +1229,13 @@ test(
                 online: false,
                 firmwareVersion: "presence-offline-test",
               }),
+              { timestamp: presenceBrokerTime },
             ),
             200,
           );
           assert.equal(offline.accepted, true);
           assert.equal(offline.messageType, "presence");
+          assert.equal(offline.stale, false);
 
           const offlineRobot = await readRobot();
           assert.equal(offlineRobot.status, "OFFLINE");
@@ -1069,6 +1255,35 @@ test(
           );
           const operationalLastSeen = offlineRobot.last_seen;
 
+          const delayedState = await expectStatus(
+            actionBody(
+              "state",
+              {
+                schemaVersion: 1,
+                robotId: TEST_ROBOT_ID,
+                status: "BUSY",
+                mode: "AUTO",
+                battery: 72,
+                signal: 80,
+                speedMps: 0.2,
+                locationId: "loc-fcs",
+                currentDeliveryId: deliveryId,
+                lidar: "OK",
+                camera: "OK",
+                esp32: "OK",
+                motorTempC: 38,
+                firmwareVersion: "delayed-state-test",
+                at: new Date().toISOString(),
+              },
+              { timestamp: presenceBrokerTime - 1 },
+            ),
+            200,
+          );
+          assert.equal(delayedState.stale, true);
+          const afterDelayedState = await readRobot();
+          assert.equal(afterDelayedState.bridge_online, false);
+          assert.equal(afterDelayedState.status, "OFFLINE");
+
           const online = await expectStatus(
             actionBody(
               "presence",
@@ -1076,11 +1291,13 @@ test(
                 online: true,
                 firmwareVersion: "presence-online-test",
               }),
+              { timestamp: presenceBrokerTime + 1_000 },
             ),
             200,
           );
           assert.equal(online.accepted, true);
           assert.equal(online.messageType, "presence");
+          assert.equal(online.stale, false);
 
           const onlineRobot = await readRobot();
           assert.equal(onlineRobot.status, "OFFLINE");
@@ -1096,17 +1313,90 @@ test(
               new Date(offlineRobot.bridge_last_seen).getTime(),
           );
           assert.equal(onlineRobot.last_seen, operationalLastSeen);
+
+          const stalePresence = await expectStatus(
+            actionBody(
+              "presence",
+              presencePayload({ online: true }),
+              { timestamp: Date.now() - 61_000 },
+            ),
+            400,
+          );
+          assert.match(stalePresence.error, /presence is too old/i);
         },
       );
 
       await t.test(
-        "rejects a delayed control event that would clear a newer ESTOP",
+        "requires a single-use staff RESUME issued after the current ESTOP",
         async () => {
+          const pauseEventId = randomUUID();
           const estopEventId = randomUUID();
           const delayedResumeEventId = randomUUID();
+          const missingSafetyEvidenceEventId = randomUUID();
+          const resumedEventId = randomUUID();
+          const blockedProgressEventId = randomUUID();
+          eventMessageIds.add(pauseEventId);
           eventMessageIds.add(estopEventId);
           eventMessageIds.add(delayedResumeEventId);
-          const estopAt = new Date().toISOString();
+          eventMessageIds.add(missingSafetyEvidenceEventId);
+          eventMessageIds.add(resumedEventId);
+          eventMessageIds.add(blockedProgressEventId);
+          const prePauseRobot = await readRobot();
+          const previousControlTime = prePauseRobot.control_event_at
+            ? new Date(prePauseRobot.control_event_at).getTime()
+            : 0;
+          const pauseTime = Math.max(Date.now(), previousControlTime + 100);
+          await expectStatus(
+            actionBody("events", {
+              schemaVersion: 1,
+              eventId: pauseEventId,
+              robotId: TEST_ROBOT_ID,
+              commandId: completionCommandId,
+              type: "PAUSED",
+              severity: "INFO",
+              at: new Date(pauseTime).toISOString(),
+              payload: { source: "pre-estop-control-race" },
+            }),
+            200,
+          );
+
+          const pausedRobot = await readRobot();
+          assert.equal(pausedRobot.mode, "PAUSED");
+          const pauseReceiptTime = new Date(
+            pausedRobot.control_event_received_at,
+          ).getTime();
+          const oldResumeIssuedTime = Math.max(
+            Date.now() + 100,
+            pauseReceiptTime + 1,
+          );
+          const oldResumeIssuedAt = new Date(oldResumeIssuedTime).toISOString();
+          const oldResumeExpiresAt = new Date(
+            oldResumeIssuedTime + 5 * 60_000,
+          ).toISOString();
+          requireData(
+            await admin.from("robot_commands").insert({
+              id: oldResumeCommandId,
+              robot_id: TEST_ROBOT_ID,
+              command_type: "RESUME",
+              payload: {
+                schemaVersion: 1,
+                commandId: oldResumeCommandId,
+                robotId: TEST_ROBOT_ID,
+                command: "RESUME",
+                payload: {},
+                issuedAt: oldResumeIssuedAt,
+                expiresAt: oldResumeExpiresAt,
+              },
+              status: "PUBLISHED",
+              issued_by: authUserId,
+              issued_at: oldResumeIssuedAt,
+              published_at: oldResumeIssuedAt,
+              expires_at: oldResumeExpiresAt,
+            }),
+            "create pre-ESTOP RESUME command",
+          );
+
+          const estopAt = new Date(oldResumeIssuedTime + 100).toISOString();
 
           await expectStatus(
             actionBody("events", {
@@ -1121,37 +1411,188 @@ test(
             200,
           );
 
+          const estoppedRobot = await readRobot();
+          assert.equal(estoppedRobot.status, "FAULT");
+          assert.equal(estoppedRobot.mode, "ESTOP");
+          const latchTime = new Date(estoppedRobot.safety_latched_at).getTime();
+          const safeStateTime = Math.max(Date.now() + 100, latchTime + 100);
+          const safeBrokerTime = Math.max(
+            safeStateTime,
+            new Date(estoppedRobot.bridge_last_seen ?? 0).getTime() + 1,
+          );
+          await expectStatus(
+            actionBody(
+              "state",
+              {
+                schemaVersion: 1,
+                robotId: TEST_ROBOT_ID,
+                status: "FAULT",
+                mode: "ESTOP",
+                battery: 73,
+                signal: 88,
+                speedMps: 0,
+                locationId: "loc-fcs",
+                currentDeliveryId: deliveryId,
+                lidar: "OK",
+                camera: "OK",
+                esp32: "OK",
+                motorTempC: 38,
+                firmwareVersion: "post-estop-safety-test",
+                at: new Date(safeStateTime).toISOString(),
+              },
+              { timestamp: safeBrokerTime },
+            ),
+            200,
+          );
+
           const rejected = await expectStatus(
             actionBody("events", {
               schemaVersion: 1,
               eventId: delayedResumeEventId,
               robotId: TEST_ROBOT_ID,
+              commandId: oldResumeCommandId,
               type: "RESUMED",
               severity: "INFO",
-              at: new Date(new Date(estopAt).getTime() - 1_000).toISOString(),
-              payload: { source: "delayed-event-regression" },
+              at: new Date(safeStateTime + 100).toISOString(),
+              payload: {
+                source: "old-resume-regression",
+                localSafetyChecksPassed: true,
+              },
             }),
             409,
           );
-          assert.match(rejected.error, /older than the current control state/i);
+          assert.match(rejected.error, /active staff-issued RESUME command/i);
 
-          const estoppedRobot = await readRobot();
-          assert.equal(estoppedRobot.status, "FAULT");
-          assert.equal(estoppedRobot.mode, "ESTOP");
-
-          requireData(
-            await admin
-              .from("robots")
-              .update({ status: "BUSY", mode: "AUTO" })
-              .eq("id", TEST_ROBOT_ID),
-            "restore active robot after control-order test",
+          const blockedProgress = await expectStatus(
+            actionBody("events", {
+              schemaVersion: 1,
+              eventId: blockedProgressEventId,
+              robotId: TEST_ROBOT_ID,
+              deliveryId,
+              commandId,
+              type: "ARRIVED_SOURCE",
+              severity: "INFO",
+              at: new Date(safeStateTime + 200).toISOString(),
+              payload: { source: "safety-latch-regression" },
+            }),
+            409,
           );
+          assert.match(blockedProgress.error, /safety latch blocks mission progress/i);
+
+          const resetIssuedTime = Math.max(Date.now() + 300, latchTime + 300);
+          const resetIssuedAt = new Date(resetIssuedTime).toISOString();
+          const resetExpiresAt = new Date(resetIssuedTime + 5 * 60_000)
+            .toISOString();
+          requireData(
+            await admin.from("robot_commands").insert({
+              id: resumeCommandId,
+              robot_id: TEST_ROBOT_ID,
+              command_type: "RESUME",
+              payload: {
+                schemaVersion: 1,
+                commandId: resumeCommandId,
+                robotId: TEST_ROBOT_ID,
+                command: "RESUME",
+                payload: {},
+                issuedAt: resetIssuedAt,
+                expiresAt: resetExpiresAt,
+              },
+              status: "PENDING",
+              issued_by: authUserId,
+              issued_at: resetIssuedAt,
+              expires_at: resetExpiresAt,
+            }),
+            "create post-ESTOP RESUME command",
+          );
+
+          const missingSafetyEvidence = await expectStatus(
+            actionBody("events", {
+              schemaVersion: 1,
+              eventId: missingSafetyEvidenceEventId,
+              robotId: TEST_ROBOT_ID,
+              commandId: resumeCommandId,
+              type: "RESUMED",
+              severity: "INFO",
+              at: new Date(Math.max(resetIssuedTime, safeStateTime) + 100)
+                .toISOString(),
+              payload: {},
+            }),
+            409,
+          );
+          assert.match(missingSafetyEvidence.error, /local safety checks/i);
+
+          await expectStatus(
+            actionBody("events", {
+              schemaVersion: 1,
+              eventId: resumedEventId,
+              robotId: TEST_ROBOT_ID,
+              commandId: resumeCommandId,
+              type: "RESUMED",
+              severity: "INFO",
+              at: new Date(Math.max(resetIssuedTime, safeStateTime) + 200)
+                .toISOString(),
+              payload: { localSafetyChecksPassed: true },
+            }),
+            200,
+          );
+
+          const resumedRobot = await readRobot();
+          assert.equal(resumedRobot.status, "BUSY");
+          assert.equal(resumedRobot.mode, "AUTO");
+
+          const consumedCommand = requireData(
+            await admin
+              .from("robot_commands")
+              .select("status")
+              .eq("id", resumeCommandId)
+              .single(),
+            "read consumed RESUME command",
+          );
+          assert.equal(consumedCommand.status, "COMPLETED");
         },
       );
 
       await t.test(
         "serializes concurrent mission starts and same-ID retries",
         async () => {
+          requireData(
+            await admin
+              .from("robot_commands")
+              .update({ status: "COMPLETED" })
+              .eq("id", commandId),
+            "retire the first mission command fixture",
+          );
+          requireData(
+            await admin
+              .from("deliveries")
+              .update({
+                status: "COMPLETED",
+                progress: 100,
+                completed_at: new Date().toISOString(),
+              })
+              .eq("id", deliveryId),
+            "retire the first delivery fixture",
+          );
+          requireData(
+            await admin
+              .from("robots")
+              .update({
+                status: "ONLINE",
+                mode: "IDLE",
+                current_delivery_id: null,
+                speed_mps: 0,
+                telemetry_at: new Date().toISOString(),
+                telemetry_received_at: new Date().toISOString(),
+                bridge_last_seen: new Date().toISOString(),
+                bridge_online: true,
+                lidar: "OK",
+                camera: "OK",
+                esp32: "OK",
+              })
+              .eq("id", TEST_ROBOT_ID),
+            "return the robot to an idle test baseline",
+          );
+
           concurrentDeliveryId = randomUUID();
           const trackingCode =
             `RACE-${randomUUID().replaceAll("-", "").slice(0, 12).toUpperCase()}`;
@@ -1182,8 +1623,35 @@ test(
             await admin
               .from("deliveries")
               .update({
-                status: "DISPATCHED",
+                status: "ASSIGNED",
                 robot_id: TEST_ROBOT_ID,
+              })
+              .eq("id", concurrentDeliveryId),
+            "assign concurrent delivery fixture",
+          );
+
+          const concurrentCommandId = randomUUID();
+          commandIds.add(concurrentCommandId);
+          requireData(
+            await admin.from("robot_commands").insert({
+              id: concurrentCommandId,
+              robot_id: TEST_ROBOT_ID,
+              delivery_id: concurrentDeliveryId,
+              command_type: "START_MISSION",
+              payload: {},
+              status: "PUBLISHED",
+              issued_by: authUserId,
+              expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+              published_at: new Date().toISOString(),
+            }),
+            "create concurrent mission command fixture",
+          );
+
+          requireData(
+            await admin
+              .from("deliveries")
+              .update({
+                status: "DISPATCHED",
                 dispatched_at: new Date().toISOString(),
               })
               .eq("id", concurrentDeliveryId),
@@ -1201,6 +1669,7 @@ test(
               eventId,
               robotId: TEST_ROBOT_ID,
               deliveryId: concurrentDeliveryId,
+              commandId: concurrentCommandId,
               type: "MISSION_STARTED",
               severity: "INFO",
               at: occurredAt,
@@ -1223,7 +1692,10 @@ test(
             ({ response }) => response.status === 409,
           );
           assert.equal(accepted?.body.accepted, true);
-          assert.match(rejected?.body.error ?? "", /current delivery state/i);
+          assert.match(
+            rejected?.body.error ?? "",
+            /current (delivery|control) state/i,
+          );
 
           const eventCount = await admin
             .from("robot_events")

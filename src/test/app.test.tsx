@@ -50,7 +50,7 @@ describe("MIIT Rover delivery workflows", () => {
     expect(await screen.findByRole("button", { name: "Dispatch mission" })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Dispatch mission" }));
     expect(await screen.findByRole("button", { name: "Advance demo checkpoint" })).toBeTruthy();
-  });
+  }, 15_000);
 
   it("requires confirmation before an emergency stop", async () => {
     const user = userEvent.setup();
@@ -60,5 +60,14 @@ describe("MIIT Rover delivery workflows", () => {
     expect(screen.getByRole("heading", { name: "Emergency-stop Rover 01?" })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Confirm emergency stop" }));
     expect(await screen.findByText("Fault")).toBeTruthy();
-  });
+    await user.click(screen.getByText("Request inspected reset"));
+    expect(
+      screen.getByRole("heading", { name: "Request reset for Rover 01?" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", {
+        name: "Inspection complete — request reset",
+      }),
+    ).toBeTruthy();
+  }, 15_000);
 });

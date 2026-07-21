@@ -128,7 +128,8 @@ select is(
 );
 
 update public.deliveries
-set status = 'APPROVED'
+set status = 'APPROVED',
+    progress = 12
 where id = '20000000-0000-0000-0000-000000000001';
 
 select is(

@@ -15,7 +15,7 @@ MIIT Rover is a full-stack minimum viable product for coordinating autonomous el
 
 The application deliberately separates mission management from vehicle control. A campus user can request a delivery, staff can approve and dispatch it, and operators can request safe high-level actions. The public web application never streams steering, throttle, or continuous wheel commands.
 
-This repository is an MVP and integration foundation, not a complete autonomous navigation stack. Local mapping, route planning, obstacle avoidance, motor PID control, hardware watchdogs, cargo-lock control, and physical E-stop behavior remain responsibilities of the Raspberry Pi, ESP32, and associated firmware.
+This repository is an MVP and integration foundation, not a complete autonomous navigation stack. A local ESP32 v0.2 raised-wheel commissioning firmware package now exists, but it has not been compiled, flashed, or hardware-verified and is not final unattended motor firmware. Local mapping, route planning, obstacle avoidance, closed-loop motor control, cargo-lock control, and verified physical E-stop behavior remain robot-side responsibilities.
 
 ## 2. Product goals
 
@@ -31,7 +31,7 @@ The project is designed to demonstrate and support the following operational flo
 8. The command is written to an audit table before publication.
 9. EMQX delivers the command to the assigned Raspberry Pi.
 10. The Pi validates schema, robot identity, expiration, and duplicate status.
-11. The Pi passes a mission request to the local mission manager or forwards a STOP frame to the ESP32.
+11. The Pi writes one `command-inbox/{commandId}.json` handoff or sends the appropriate timed `STOP`/latching `ESTOP` safety frame to the ESP32.
 12. The robot publishes an acknowledgement and retains local authority over physical motion.
 13. EMQX Data Integration forwards acknowledgements, state, events, and presence to the authenticated ingestion function.
 14. PostgreSQL atomically records events and advances delivery state from robot evidence.
@@ -72,9 +72,9 @@ React application
                               v
                         Raspberry Pi bridge
                               |
-                              +----> Local mission request file
+                              +----> command-inbox/{commandId}.json
                               |
-                              +----> ESP32 UART STOP frame
+                              +----> ESP32 UART timed STOP / latching ESTOP
                               |
                               +----> MQTT acknowledgements, state,
                                      events, and retained presence
@@ -563,6 +563,7 @@ supabase/migrations/202607200007_database_notifications.sql
 supabase/migrations/202607200008_require_dispatched_mission_start.sql
 supabase/migrations/202607200009_serialize_mission_start.sql
 supabase/migrations/202607210010_robot_connectivity_and_event_order.sql
+supabase/migrations/202607210011_robot_ingestion_safety_followup.sql
 ```
 
 ### 11.1 Extensions and enum types
@@ -618,7 +619,11 @@ Notable constraints:
 - Signal must be between 0 and 100.
 - Sensor states are limited to `OK`, `WARNING`, or `OFFLINE`.
 - `current_delivery_id` references a delivery and is cleared if that delivery is deleted.
-- `telemetry_at` rejects an older state snapshot after a newer snapshot has already been applied.
+- `telemetry_at` stores the robot-provided observation time and rejects an older
+  state snapshot after a newer snapshot has already been applied.
+- `telemetry_received_at` stores trusted server receipt time and determines
+  operational freshness; a robot clock that is ahead cannot keep telemetry
+  fresh after state publication stops.
 - `firmware_version` records the active Pi agent version reported by the robot.
 
 ### 11.5 `deliveries`
@@ -668,6 +673,7 @@ Allowed command record states:
 
 ```text
 PENDING
+PUBLISH_UNKNOWN
 PUBLISHED
 ACKNOWLEDGED
 REJECTED
@@ -675,6 +681,11 @@ COMPLETED
 FAILED
 EXPIRED
 ```
+
+`PUBLISH_UNKNOWN` is a conservative reconciliation barrier used before the
+external EMQX call. It is retained after a timeout or broker/proxy 5xx because
+the broker may already have accepted the command; staff or later robot evidence
+must resolve it before a different command ID is issued.
 
 ### 11.7 `robot_events`
 
@@ -712,6 +723,29 @@ telemetry (`last_seen`, `telemetry_at`). Presence alone cannot keep stale
 BUSY/speed/sensor values alive. The migration also serializes robot control
 events and rejects an older PAUSED/RESUMED/ESTOP or terminal mission event when
 a newer control state is already recorded.
+
+Migration `202607210011_robot_ingestion_safety_followup.sql` is an append-only
+hardening layer because `010` was already published in Git. It orders bridge
+state by the EMQX broker timestamp, records trusted telemetry receipt time,
+tracks the actual safety-latch time, and serializes mission and ordinary control
+command reservations through robot/delivery row locks and partial unique
+indexes. It adds `PUBLISH_UNKNOWN` for ambiguous external publish outcomes and
+`finalize_robot_command_publish()` so command publication and delivery dispatch
+are finalized in one database transaction even when robot ACK/event evidence
+races the HTTP response. It blocks mission progress while ESTOP/FAULT is
+latched and permits reset only through a single-use `RESUME` command issued by
+an ADMIN/OPERATOR after that latch, followed by fresh safe telemetry and a
+linked `RESUMED` event carrying local-safety confirmation. It accepts only an
+identical event retry under an existing event ID, rejects conflicting event
+content and terminal ACK transitions, requires mission events to reference a
+valid time-ordered START_MISSION command, and prevents more than one active
+mission command per robot or delivery.
+
+Migration `011` also narrows the earlier `DISPATCHED`-only rule: an
+`ASSIGNED` delivery may accept `MISSION_STARTED` only when the event is linked
+to its valid reserved `START_MISSION` command. This covers the race in which the
+robot proves receipt before the Edge Function receives or finalizes the EMQX
+HTTP response; every unrelated `ASSIGNED` event remains rejected.
 
 ### 11.8 `notifications`
 
@@ -773,10 +807,13 @@ The command and ingestion functions live at:
 
 ```text
 supabase/functions/dispatch-delivery/index.ts
+supabase/functions/dispatch-delivery/publish-response.js
 supabase/functions/ingest-robot-message/index.ts
 ```
 
-It runs in the Supabase Deno environment.
+The Edge Functions run in the Supabase Deno environment. The small publish
+response classifier is dependency-free so its EMQX status semantics can also
+be exercised directly by Node in CI.
 
 ### 13.1 Request processing
 
@@ -789,12 +826,23 @@ The function:
 5. Loads the caller's application role.
 6. Requires `ADMIN` or `OPERATOR`.
 7. Accepts either a delivery dispatch or a robot command.
-8. Validates command type and delivery readiness.
+8. Validates command type plus fresh bridge/telemetry, idle state, battery, and sensor readiness before mission dispatch.
 9. Creates an expiring command envelope.
-10. Inserts a `PENDING` command audit row.
-11. Calls the EMQX v5 publish REST API.
-12. Marks publish success or failure.
-13. Marks the delivery `DISPATCHED`; physical movement state is not changed until a robot event arrives.
+10. Inserts a `PUBLISH_UNKNOWN` command audit row before making the external
+    call, reserving the robot/delivery against concurrent mission or control
+    commands.
+11. Calls the EMQX v5 publish REST API with a ten-second timeout.
+12. Treats only HTTP 200 as delivered. HTTP 202 with
+    `no_matching_subscribers` is a known non-delivery:
+    the command becomes `FAILED` and the delivery remains `ASSIGNED`.
+13. Changes an unambiguous broker 4xx rejection to `FAILED`, but retains
+    `PUBLISH_UNKNOWN` after a timeout, 5xx, or any other unrecognized response
+    because publication may already have happened.
+14. Reconciles ACK/event evidence that races the HTTP response and calls
+    `finalize_robot_command_publish()` only after accepted publication.
+15. Atomically finalizes the command status/publication time and changes an
+    assigned delivery to `DISPATCHED`; physical movement state is not changed
+    until a robot event arrives.
 
 ### 13.2 Ingestion processing
 
@@ -802,15 +850,21 @@ The function:
 
 1. Accepts only POST requests.
 2. Requires the `x-emqx-secret` shared secret.
-3. Validates the EMQX topic, MQTT username, MQTT client ID, payload `robotId`, and schema version.
+3. Validates the complete EMQX envelope, including `mqttMessageId`, topic, MQTT
+   username, MQTT client ID, QoS, broker timestamp, payload `robotId`, and
+   schema version.
 4. Accepts only the acknowledgement, state, event, and presence topic suffixes.
-5. Validates UUIDs, timestamps, enums, numeric ranges, sensor states, and message size.
-6. Updates `robot_commands` from acknowledgements.
-7. Calls `apply_robot_state` so out-of-order telemetry cannot replace newer state.
-8. Calls `apply_robot_event` so event insertion and delivery transitions are atomic.
-9. Treats repeated event IDs as successful QoS 1 duplicates.
-10. Uses server receipt time for `last_seen`.
-11. Rejects a topic/payload identity mismatch before using the service role.
+5. Enforces exact topic-specific payload fields, strict timezone-bearing timestamps, UUIDs, enums, numeric ranges, sensor states, and a streamed 64 KiB request limit.
+6. Calls `apply_robot_ack` so valid ACK state transitions are serialized,
+   including ACK/event evidence received while publication is still
+   `PUBLISH_UNKNOWN`; repeated current status is a no-op and conflicting
+   terminal transitions are rejected.
+7. Calls `apply_robot_state_observed` so device telemetry is ordered by its observation time and bridge connectivity by the EMQX broker timestamp.
+8. Calls `apply_robot_event` so event insertion, command validation, safety-latch checks, and delivery transitions are atomic.
+9. Treats only an identical repeated event ID as an idempotent QoS-1 duplicate; the same ID with changed content is rejected.
+10. Updates `last_seen` only with accepted fresh state telemetry. ACKs, events, and presence cannot keep operational telemetry alive.
+11. Uses broker-observed time for retained presence/Last Will ordering and rejects stale online presence.
+12. Rejects a topic/payload identity mismatch before using the service role.
 
 ### 13.3 Supported command requests
 
@@ -942,7 +996,7 @@ The system must not transport video frames or continuous motor commands over the
   "camera": "OK",
   "esp32": "OK",
   "motorTempC": 37.2,
-  "firmwareVersion": "pi-agent-1.2.0"
+  "firmwareVersion": "pi-agent-1.3.0"
 }
 ```
 
@@ -995,16 +1049,17 @@ The local mission manager must reuse the same `eventId` when retrying an event. 
   "robotId": "robot-01",
   "online": true,
   "at": "ISO-8601 timestamp",
-  "firmwareVersion": "pi-agent-1.2.0"
+  "firmwareVersion": "pi-agent-1.3.0"
 }
 ```
 
 Presence is retained. The Pi publishes online presence after connection and
 every 15 seconds. Its MQTT Last Will publishes the same schema with
 `online: false`. Online presence updates connectivity time and firmware only;
-it does not clear an operational `OFFLINE`, `FAULT`, or `ESTOP` state. A fresh,
-validated state snapshot or robot event is required to change operational
-state again.
+it does not claim operational readiness. Only a fresh validated state snapshot
+may restore ordinary ONLINE/BUSY telemetry. `ESTOP`/`FAULT` is stricter: state
+snapshots and mission progress cannot clear it; the robot must emit a newer
+`RESUMED` event tied to one unconsumed, post-latch staff `RESUME` command.
 
 ## 15. Raspberry Pi bridge
 
@@ -1027,7 +1082,7 @@ At startup the process:
 
 - Reads robot, broker, serial, and state configuration from environment variables.
 - Fails closed until `timedatectl` reports a synchronized clock.
-- Creates its persistent state directory.
+- Creates command, event, and acknowledgement inbox/outbox/archive directories and recovers complete interrupted atomic writes.
 - Opens a SQLite database for processed command IDs.
 - Opens the ESP32 serial port when available and reports an event if the link is unavailable.
 - Configures MQTT username/password and TLS certificate validation.
@@ -1036,21 +1091,23 @@ At startup the process:
   commands survive a temporary Pi disconnect.
 - Subscribes to the robot's command topic and verifies the SUBACK.
 - Publishes retained online presence only after that subscription is accepted.
-- Starts a background presence, state, and event-outbox publisher.
+- Starts a guarded background presence, state, ACK-outbox, and event-outbox publisher.
 
 ### 15.2 Validation
 
 For each command, the bridge verifies:
 
 - JSON is parseable.
-- `commandId` exists.
+- The packet arrived on the exact command topic with QoS 1 and is not retained.
+- The encoded packet is no larger than 32 KiB and has only the command-specific fields.
+- `commandId` is a UUID.
 - `schemaVersion` is 1.
 - The envelope robot ID matches the configured robot.
-- The command has not expired.
-- The command ID has not already been processed.
+- The issued/expiry interval is positive and within the command-specific maximum TTL.
+- A matching processed command ID reuses its original durable outcome even after expiry; the same ID with different content is treated as a security fault.
 - The command type is supported.
 
-Malformed commands cause a best-effort STOP, a rejected acknowledgement when a command ID is available, and a `BRIDGE_FAULT` event.
+Malformed commands cause a best-effort STOP, a rejected acknowledgement when a trustworthy command ID is available, and a `BRIDGE_FAULT` event. The bridge writes the result/ACK durably before manually acknowledging an inbound QoS-1 packet; if durable persistence fails, broker redelivery remains enabled.
 
 ### 15.3 Idempotency
 
@@ -1060,7 +1117,10 @@ Processed command IDs are stored in:
 ${ROBOT_STATE_DIR}/commands.db
 ```
 
-When a duplicate command arrives, the Pi does not execute it again. It publishes an acknowledgement explaining that the previous result is retained.
+When an identical duplicate command arrives, the Pi does not execute it again.
+It reuses the original result and outcome timestamp. Reusing a command ID with
+changed content never creates a contradictory REJECTED ACK; it records a fault
+and retains the original result.
 
 ### 15.4 Local mission handoff
 
@@ -1096,7 +1156,7 @@ safety state and publish `RESUMED` only after accepting the request.
 
 ### 15.5 ESP32 handoff
 
-`PAUSE` and `ESTOP` send a JSON-line STOP frame over UART:
+`PAUSE` sends a short-lived, non-latching JSON-line STOP frame over UART:
 
 ```json
 {
@@ -1106,13 +1166,26 @@ safety state and publish `RESUMED` only after accepting the request.
 }
 ```
 
+`ESTOP` takes physical priority over disk-backed audit work and sends the
+firmware's distinct latching frame without a TTL:
+
+```json
+{
+  "v": 1,
+  "cmd": "ESTOP"
+}
+```
+
 The bridge waits for `ESP32_READY_DELAY_SECONDS` after opening a serial device
 that may reset on open. A successful OS write is still not a physical motor
 acknowledgement. The bridge does not publish `PAUSED`; the mission manager must
 do that only after locally confirming the stopped state. `ESTOP_TRIGGERED`
 immediately fails the cloud state safe and includes
 `physicalConfirmation: false` until the ESP32 protocol provides a verified
-acknowledgement.
+acknowledgement. The v0.2 commissioning firmware cannot clear this latch over
+UART: a nearby operator must remove hazards, release hard-stop inputs, perform
+the local ESP32 reset, and verify that clearing leaves motion disarmed before a
+cloud `RESUME` is requested.
 
 The ESP32 must still enforce:
 
@@ -1123,7 +1196,7 @@ The ESP32 must still enforce:
 - Local fault behavior.
 - Safe motor output.
 
-### 15.6 State and event handoff
+### 15.6 State, event, and acknowledgement handoff
 
 The mission manager writes a complete state snapshot atomically to:
 
@@ -1175,8 +1248,18 @@ timestamps, event type, severity, mission linkage, and the detail object, then
 persists the normalized file before publishing. After the MQTT QoS 1 broker
 acknowledgement, it moves the file to `event-archive` instead of deleting it.
 Broker acknowledgement does not prove that the EMQX HTTP action reached
-Supabase; the archive permits replay with the same idempotent `eventId` after
-an HTTP-action failure. Invalid files are renamed to `*.bad`.
+Supabase; the archive permits reconciliation and, when still valid for the
+current lifecycle order, replay with the same identical `eventId`. An older
+control/lifecycle event is intentionally rejected after a newer
+`control_event_at`; do not bypass that safety check. Invalid files are renamed
+to `*.bad`.
+
+The bridge similarly writes deterministic command/status ACK files under
+`ack-outbox` before acknowledging the inbound command. It publishes ACK files
+in outcome-time order and moves them to `ack-archive` only after broker PUBACK.
+The original timestamp is retained across crash recovery and expired QoS
+duplicates. As with events, archive status must be reconciled with Supabase;
+broker PUBACK is not an application-level receipt.
 
 After repairing and positively testing the EMQX HTTP action, replay an archived
 event without editing its IDs or timestamps:
@@ -1190,7 +1273,7 @@ sudo -u rover mv event-outbox/EVENT_ID.tmp event-outbox/EVENT_ID.json
 Copy all related lifecycle events before replaying a backlog; the agent sorts
 them by occurrence time. Verify Supabase accepted each event before deleting
 any archive. Define disk alerts and an evidence-retention period for
-`event-archive`, `command-archive`, and `commands.db`; the bridge deliberately
+`event-archive`, `ack-archive`, `command-archive`, and `commands.db`; the bridge deliberately
 does not delete the only local recovery evidence automatically.
 
 ### 15.7 Pi environment variables
@@ -1212,7 +1295,7 @@ ESP32_SERIAL_PORT=/dev/ttyUSB0
 ESP32_READY_DELAY_SECONDS=2
 ROBOT_STATE_DIR=/var/lib/miit-rover
 MQTT_CA_FILE=/path/to/readable/ca.pem
-ROBOT_AGENT_VERSION=pi-agent-1.2.0
+ROBOT_AGENT_VERSION=pi-agent-1.3.0
 ROBOT_REQUIRE_TIME_SYNC=true
 TIME_SYNC_RETRY_SECONDS=5
 PRESENCE_INTERVAL_SECONDS=15
@@ -1223,11 +1306,15 @@ ROBOT_COMMAND_ARCHIVE=/var/lib/miit-rover/command-archive
 ROBOT_STATE_FILE=/var/lib/miit-rover/robot_state.json
 ROBOT_EVENT_OUTBOX=/var/lib/miit-rover/event-outbox
 ROBOT_EVENT_ARCHIVE=/var/lib/miit-rover/event-archive
+ROBOT_ACK_OUTBOX=/var/lib/miit-rover/ack-outbox
+ROBOT_ACK_ARCHIVE=/var/lib/miit-rover/ack-archive
 ROBOT_LOG_LEVEL=INFO
 ```
 
 Omit `MQTT_CA_FILE` entirely to use the operating-system trust store; do not
 set it to a blank value in copied deployment templates.
+Replace the development serial default with the persistent
+`/dev/serial/by-id/...` path in every production environment.
 
 Production values should be stored in a root-owned systemd environment file, not committed to the repository.
 `MQTT_USERNAME` must equal `ROBOT_ID`; the ingestion endpoint uses this equality as one of its robot-identity checks.
@@ -1242,7 +1329,8 @@ The repository follows several safety principles:
 - Only authenticated staff can invoke the command function.
 - The Pi validates the command independently.
 - The Pi persists idempotency state.
-- STOP is forwarded locally for pause and E-stop.
+- `PAUSE` forwards a short-lived, non-latching `STOP`; `ESTOP` forwards the
+  separate latching `ESTOP` frame.
 - Continuous motor control is absent from the public web application.
 - TLS is required between Pi and MQTT broker.
 - The ESP32 is expected to fail safe independently.
@@ -1266,6 +1354,15 @@ EV/
 │   └── hosting.json
 ├── public/
 │   └── robot-mark.svg
+├── MIIT_Rover_ESP32_Firmware_v0.2.0/
+│   └── robot-esp32/
+│       ├── MIIT_Rover_ESP32/
+│       │   ├── MIIT_Rover_ESP32.ino
+│       │   └── config.h
+│       ├── tests/test_protocol.py
+│       ├── tools/pi_serial_test.py
+│       ├── CHANGELOG.md
+│       └── README.md
 ├── robot-pi/
 │   ├── agent.py
 │   ├── local_store.py
@@ -1273,6 +1370,7 @@ EV/
 │   ├── miit-rover-agent.service
 │   ├── requirements.txt
 │   ├── robot.env.example
+│   ├── test_agent.py
 │   ├── test_local_store.py
 │   └── test_message_contract.py
 ├── scripts/
@@ -1311,7 +1409,8 @@ EV/
 │   ├── config.toml
 │   ├── functions/
 │   │   ├── dispatch-delivery/
-│   │   │   └── index.ts
+│   │   │   ├── index.ts
+│   │   │   └── publish-response.js
 │   │   └── ingest-robot-message/
 │   │       └── index.ts
 │   ├── migrations/
@@ -1324,7 +1423,8 @@ EV/
 │   │   ├── 202607200007_database_notifications.sql
 │   │   ├── 202607200008_require_dispatched_mission_start.sql
 │   │   ├── 202607200009_serialize_mission_start.sql
-│   │   └── 202607210010_robot_connectivity_and_event_order.sql
+│   │   ├── 202607210010_robot_connectivity_and_event_order.sql
+│   │   └── 202607210011_robot_ingestion_safety_followup.sql
 │   └── tests/
 │       ├── database/
 │       │   ├── 001_schema_security.sql
@@ -1332,13 +1432,18 @@ EV/
 │       │   ├── 003_robot_state.sql
 │       │   ├── 004_robot_events.sql
 │       │   ├── 005_robot_maintenance.sql
-│       │   └── 006_robot_presence_order.sql
+│       │   ├── 006_robot_presence_order.sql
+│       │   └── 007_command_publish.sql
 │       ├── integration/
+│       │   ├── emqx-publish-response.test.mjs
 │       │   └── ingest-robot-message.test.mjs
 │       └── robot-ingest.test.env
 ├── .env.example
 ├── .gitignore
 ├── DoneRaspberrypi.md
+├── MIIT_Rover_Raspberry_Pi_Ubuntu_Setup_Guide.md
+├── Remainding.md
+├── RemaindingRaspberryPi.md
 ├── index.html
 ├── package-lock.json
 ├── package.json
@@ -1407,6 +1512,7 @@ EV/
 | File | Responsibility |
 |---|---|
 | `supabase/functions/dispatch-delivery/index.ts` | Authorized command creation, audit, and EMQX publication |
+| `supabase/functions/dispatch-delivery/publish-response.js` | Pure EMQX HTTP status classifier that prevents 202/no-subscriber responses from dispatching a delivery |
 | `supabase/functions/ingest-robot-message/index.ts` | Authenticated EMQX webhook ingestion and message validation |
 | `202607160001_initial_schema.sql` | Core schema, RLS, indexes, triggers, seed data, and Realtime |
 | `202607160002_server_tracking_codes.sql` | Concurrency-safe tracking code generation |
@@ -1418,18 +1524,26 @@ EV/
 | `202607200008_require_dispatched_mission_start.sql` | Rejects a new mission-start event until the linked delivery is dispatched to that robot |
 | `202607200009_serialize_mission_start.sql` | Serializes mission-start validation so concurrent events cannot advance one delivery twice |
 | `202607210010_robot_connectivity_and_event_order.sql` | Separates bridge presence from telemetry, fails stale robots safe, and rejects delayed control events |
+| `202607210011_robot_ingestion_safety_followup.sql` | Adds receipt-time freshness, safe publish reconciliation, atomic dispatch finalization, command reservations, safety reset requirements, and stricter event ordering |
 | `supabase/tests/database/*.sql` | pgTAP coverage for schema security, notifications, ingestion state transitions, expiration, and offline detection |
+| `supabase/tests/database/007_command_publish.sql` | pgTAP coverage for `PUBLISH_UNKNOWN`, publication finalization, and command reservation races |
+| `supabase/tests/integration/emqx-publish-response.test.mjs` | Fast Node coverage proving that only HTTP 200 is delivered and HTTP 202 means no matching subscriber |
 | `supabase/tests/integration/ingest-robot-message.test.mjs` | Sends the exact EMQX HTTP action contract through the locally served ingestion function |
 | `supabase/tests/robot-ingest.test.env` | Test-only local ingestion secret used by the integration runner |
 | `robot-pi/agent.py` | Secure MQTT-to-local mission and ESP32 bridge |
 | `robot-pi/local_store.py` | Fsynced atomic JSON writes, command inbox persistence, and interrupted-write recovery |
 | `robot-pi/message_contract.py` | Pure Pi state/event validation aligned with the ingestion Edge Function |
+| `robot-pi/test_agent.py` | Hardware-free tests for command processing, durable ACK ordering, replay handling, and STOP/ESTOP behavior |
 | `robot-pi/test_local_store.py` | Tests one-file-per-command handoff and interrupted-write recovery |
 | `robot-pi/test_message_contract.py` | Hardware-free tests for robot identity, telemetry freshness, and event schema rules |
 | `robot-pi/robot.env.example` | Secret-free production environment template |
+| `MIIT_Rover_Raspberry_Pi_Ubuntu_Setup_Guide.md` | Preserved historical guide used only as a phase/step reference; its old agent and ROS commands require current validation |
 | `robot-pi/miit-rover-agent.service` | Hardened systemd unit with network/time ordering and automatic restart |
 | `robot-pi/requirements.txt` | Pi Python dependencies |
-| `DoneRaspberrypi.md` | Pi installation runbook and dated live-verification record; not autonomous-navigation proof |
+| `DoneRaspberrypi.md` | Verified completed-work record for the deployed Raspberry Pi bridge |
+| `Remainding.md` | Ordered remaining EV-folder, laptop, Supabase, EMQX, Cloudflare, and robot-source tasks |
+| `RemaindingRaspberryPi.md` | Ordered remaining Pi deployment, ESP32, navigation, safety, and physical-test tasks |
+| `MIIT_Rover_ESP32_Firmware_v0.2.0/robot-esp32/` | Unflashed and hardware-unverified v0.2 raised-wheel commissioning firmware, protocol tester, and host tests |
 
 ### Hosting assets
 
@@ -1484,6 +1598,21 @@ Run the hardware-free Raspberry Pi message-contract tests:
 npm run test:pi
 ```
 
+Run the hardware-free ESP32 protocol/CRC tests:
+
+```bash
+npm run test:esp32
+```
+
+This host test does not compile the Arduino sketch, flash a controller, open a
+serial port, or prove physical safety behavior.
+
+Run the fast EMQX publish-response classifier test:
+
+```bash
+npm run test:emqx-publish
+```
+
 Build:
 
 ```bash
@@ -1505,9 +1634,13 @@ The test suite uses:
 - React Testing Library.
 - `user-event`.
 - pgTAP against local PostgreSQL.
-- Node's built-in test runner for the EMQX HTTP webhook contract.
-- Python `unittest` for Pi-side robot identity, state freshness, ranges,
-  timestamps, UUIDs, and event schemas.
+- Node's built-in test runner for the EMQX HTTP webhook contract and command
+  publish-response classifier.
+- Python `unittest` for Pi-side command processing, durable storage, robot
+  identity, state freshness, ranges, timestamps, UUIDs, and event schemas.
+- Python host tests for ESP32 JSON framing, CRC vectors, and the requirement for
+  a matching positive motion acknowledgement; these do not compile or exercise
+  the firmware or hardware.
 
 `src/test/setup.ts`:
 
@@ -1536,9 +1669,17 @@ Database tests in `supabase/tests/database/` cover:
 - Database-backed notification visibility, read state, and staff demotion
   enforcement.
 - Ordered robot state ingestion.
+- Separate bridge/state ordering, stale Last Will/state races, and telemetry-only operational heartbeats.
 - Idempotent event ingestion and valid delivery transitions.
-- Rejection of `MISSION_STARTED` until the delivery is `DISPATCHED`.
+- Conflicting event-ID rejection, full lifecycle ordering, safety-latch preservation, and single-use staff reset authorization.
+- Rejection of `MISSION_STARTED` unless the delivery is `DISPATCHED`, or is
+  `ASSIGNED` during the narrow valid-command publish race covered by migration
+  `011`.
 - Rejection of the second of two concurrent mission-start events.
+- Receipt-time telemetry freshness, `PUBLISH_UNKNOWN` reconciliation, atomic
+  publish/dispatch finalization, and serialized mission/control reservations.
+- Blocking mission progress and `RETURN_HOME` while the robot is `PAUSED`
+  until a validated, single-use `RESUMED` event clears the pause.
 - Expiration of stale `PENDING` and `PUBLISHED` commands.
 - Stale heartbeat handling and offline event creation.
 
@@ -1557,6 +1698,10 @@ ingestion function, and then runs the HTTP contract tests:
 npm run test:integration
 ```
 
+As of the 21 July 2026 working-tree audit, this Docker-backed pgTAP/Edge
+Function suite had not yet been run with migration `011`; the migration and
+changed functions remain deployment-blocked until it passes.
+
 Never point this reset workflow at a linked or production project. The runner
 checks that the Supabase API URL is a loopback address and uses a committed
 test-only ingestion secret, so CI needs no Supabase or EMQX credentials.
@@ -1566,9 +1711,10 @@ or configure an EMQX broker. A separate smoke test through the deployed EMQX
 rule, its connector credentials and ACLs, plus hardware-in-the-loop testing,
 remains required.
 
-GitHub Actions runs the frontend type-check, unit tests and build in one job,
-and the isolated Supabase/EMQX contract suite in a second Ubuntu job. Both jobs
-run on pull requests and pushes to `main`.
+GitHub Actions has three isolated jobs: Pi bridge/contract/storage plus ESP32
+host-protocol tests, frontend type-check/unit/build checks, and the local
+Supabase/EMQX webhook contract suite. They run on pull requests and pushes to
+`main` without robot or hosted-project credentials.
 
 ## 21. Build and hosting
 
@@ -1677,7 +1823,7 @@ Use this rule:
 
 ```sql
 SELECT
-  id AS mqttMessageId,
+  bin2hexstr(id) AS mqttMessageId,
   topic,
   payload,
   clientid,
@@ -1704,6 +1850,12 @@ Use this HTTP body:
   "timestamp": ${timestamp}
 }
 ```
+
+The EMQX rule-engine `id` value is binary. `bin2hexstr(id)` converts it to the
+stable hexadecimal string expected by the ingestion handler; EMQX examples
+normally render it as 32 hexadecimal characters. Keep the `${mqttMessageId}`
+template quoted in JSON. The handler treats the ID as opaque and accepts a
+non-empty message-ID string up to 256 characters.
 
 Enable HTTP action retry/buffering when the selected EMQX deployment exposes those settings. The endpoint returns success only after its database operation completes.
 
@@ -1749,14 +1901,17 @@ The repository is honest about the boundary between an MVP and a production auto
 - Concurrency-safe cloud tracking codes.
 - Staff-authorized Edge Function.
 - Command audit before publish.
+- Conservative `PUBLISH_UNKNOWN` handling for ambiguous broker outcomes.
+- Atomic command-publication/delivery-dispatch finalization and serialized
+  mission/control command reservations.
 - Expiring MQTT envelope.
 - Pi-side identity, expiry, and duplicate validation.
 - TLS MQTT configuration.
-- STOP forwarding for PAUSE and ESTOP.
+- Timed STOP forwarding for PAUSE and distinct latching ESTOP forwarding.
 - Shared-secret EMQX-to-Supabase ingestion endpoint.
 - Broker/payload/client identity validation.
 - Acknowledgement updates for `robot_commands`.
-- Ordered state ingestion for `robots`.
+- Device-ordered state ingestion with server receipt-time freshness for `robots`.
 - Idempotent and atomic robot-event ingestion.
 - Event-driven cloud delivery checkpoints.
 - Retained presence and Pi heartbeat publication.
@@ -1768,11 +1923,12 @@ The repository is honest about the boundary between an MVP and a production auto
 - Column-restricted profile editing that prevents role self-promotion.
 - Local pgTAP coverage for database security, ingestion transitions, notifications, command expiration, and offline detection.
 - Automated EMQX HTTP webhook contract tests through the local ingestion Edge Function.
-- GitHub Actions checks for the Pi contract, frontend, and isolated local integration suite.
-- Durable Pi event outbox interface for the local mission manager.
+- GitHub Actions checks for the Pi/ESP32 host contracts, frontend, and isolated local integration suite.
+- Durable Pi ACK and event outbox/archive interfaces.
 - Pi-side schema and telemetry-freshness validation with broker-accepted event
   archives for idempotent recovery.
-- Hardware-free Pi message-contract tests in CI.
+- Hardware-free Pi command-processing, message-contract, and local-storage recovery tests in CI.
+- Hardware-free ESP32 framing, CRC-vector, and positive-ACK requirement tests.
 - Production web packaging.
 
 ### 24.2 Not yet implemented in this repository
@@ -1781,13 +1937,20 @@ The repository is honest about the boundary between an MVP and a production auto
 - A mission manager that produces fresh state snapshots and mission events.
 - ROS 2/Nav2 integration.
 - Marker detection.
-- ESP32 motor firmware.
-- Hardware heartbeat/watchdog implementation.
+- Production ESP32 motor firmware. The local v0.2 commissioning source includes
+  heartbeat/TTL/watchdog logic but has not been compiled, flashed, or
+  hardware-verified and is not unattended-production firmware.
+- A verified hardware heartbeat/watchdog installation.
 - Hardware E-stop implementation.
+- A single deployed serial-port owner that arbitrates both navigation and safety traffic.
+- A mission-manager event producer that can emit the locally verified linked
+  `RESUMED` event required by the cloud reset path.
 - Cargo-lock firmware and secure unlock-code delivery.
-- Transactional robot assignment that prevents double-booking.
+- Fully transactional robot assignment (active mission commands are now unique per robot/delivery, but assignment itself still needs an atomic reservation workflow).
 - SMS or other recipient notification delivery.
 - Passing live EMQX-to-Supabase return-path and cloud-to-robot smoke tests.
+- Server-enforced rate limiting and abuse protection for delivery/command calls.
+- Automated operational alerts for failed or backlogged EMQX HTTP actions.
 - Load, penetration, and hardware-in-the-loop testing.
 
 ### 24.3 Notable MVP details
@@ -1797,22 +1960,31 @@ The repository is honest about the boundary between an MVP and a production auto
 - The frontend model can display an unlock code, while the database stores only `unlock_code_hash`. A secure reveal/verification flow is still required.
 - `RESUME` is acknowledged by the bridge, but actual mission resumption is intentionally delegated to a local mission manager after safety checks.
 - The bridge provides state and event handoff files, but the local mission manager that produces them is still a required Pi component.
-- Online MQTT presence reports bridge connectivity only. It cannot clear
-  `OFFLINE`, `FAULT`, or `ESTOP`; fresh mission-manager state is required.
+- Online MQTT presence reports bridge connectivity only. Fresh state can
+  restore ordinary operational status, but cannot clear `FAULT`/`ESTOP`; only
+  a valid single-use post-latch staff RESUME followed by robot `RESUMED` can.
 
 ## 25. Recommended next engineering work
 
 Suggested order:
 
-1. Configure the EMQX HTTP Server connector and rule for the new ingestion endpoint.
-2. Implement the Pi mission manager that consumes requests and produces state/events.
-3. Implement the ESP32 motor, encoder, heartbeat, and physical E-stop firmware.
-4. Make robot assignment transactional and reject already-occupied robots.
-5. Design the cargo-lock and one-time-code lifecycle.
-6. Add broker ACL tests and credential rotation procedures.
-7. Run the documented smoke suite through a deployed EMQX rule and dedicated test robot identity.
-8. Perform supervised hardware-in-the-loop testing with wheels raised.
-9. Complete a hazard analysis before any unsupervised campus trial.
+1. Run the Docker-backed integration suite for migration `011`, then deploy the
+   pending migrations and both changed Edge Functions only after it passes.
+2. Repair and positively test the existing EMQX HTTP action and Deployment API
+   credentials, including retries, response metrics, and least-privilege ACLs.
+3. Implement server-enforced delivery/command rate limiting and abuse protection.
+4. Add automated operational alerts for failed or backlogged EMQX HTTP actions.
+5. Reconcile the already deployed Pi bridge with the pushed commit and verify
+   an active one-owner ESP32 serial session.
+6. Implement the Pi mission manager that consumes requests, produces state and
+   linked events, and provides the verified `RESUMED` event path.
+7. Select one serial-port owner, compile/flash the commissioning ESP32 source,
+   and verify heartbeat, STOP, latching ESTOP, local reset, and the physical
+   E-stop with motor power disconnected before raised-wheel testing.
+8. Make initial robot assignment transactional and reject already-reserved robots.
+9. Design the cargo-lock and one-time-code lifecycle.
+10. Perform the live broker and supervised hardware-in-the-loop smoke suites.
+11. Complete a hazard analysis before any unsupervised campus trial.
 
 ## 26. Security and privacy checklist
 
@@ -1886,7 +2058,7 @@ The EMQX-to-function request must also contain the server-only `x-emqx-secret`.
 
 | Robot event | Required current state | Resulting state |
 |---|---|---|
-| `MISSION_STARTED` | `DISPATCHED` | `TO_SOURCE` |
+| `MISSION_STARTED` | `DISPATCHED`, or `ASSIGNED` only with its valid reserved in-flight command | `TO_SOURCE` |
 | `ARRIVED_SOURCE` | `TO_SOURCE` | `AT_SOURCE` |
 | `PACKAGE_LOADED` | `AT_SOURCE` | `PACKAGE_LOADED` |
 | `DEPARTED_SOURCE` | `PACKAGE_LOADED` | `TO_DESTINATION` |
@@ -1896,17 +2068,24 @@ The EMQX-to-function request must also contain the server-only `x-emqx-secret`.
 | `MISSION_COMPLETED` | `DELIVERED` or `RETURNING` | `COMPLETED` |
 | `MISSION_FAILED` | Any non-terminal mission state | `FAILED` |
 
-An event that is impossible for the current delivery state is rejected and its database insert is rolled back. A repeated `eventId` returns success as an idempotent duplicate.
+An event that is impossible for the current delivery or safety state is rejected
+and its database insert is rolled back. Repeating an `eventId` is idempotent
+only when robot, delivery, command, type, severity, detail, and timestamp are
+identical; changed content with the same ID is rejected.
 
 ### 28.3 Offline behavior
 
-Valid state, acknowledgement, and event messages update `robots.last_seen`
-using server time. Presence updates `bridge_last_seen` and `bridge_online`
-instead. The Pi sends retained presence every 15 seconds. An online presence
+Only accepted fresh state telemetry updates `robots.last_seen`,
+`telemetry_received_at`, and `telemetry_at`. The first two are trusted server
+receipt times; `telemetry_at` is the device observation time used for ordering.
+Acknowledgements and events do not refresh the operational heartbeat.
+Presence updates `bridge_last_seen` and `bridge_online` using the EMQX broker
+timestamp instead. The Pi sends retained presence every 15 seconds. An online presence
 heartbeat proves MQTT bridge connectivity but intentionally does not restore
 the operational robot status; fresh state telemetry must do that. The scheduled
-`mark-stale-robots-offline` database function runs once per minute and marks
-any robot without a valid message for 60 seconds as:
+`mark-stale-robots-offline` database function runs once per minute. It clears
+`bridge_online` when `bridge_last_seen` is stale and separately marks any robot
+without a fresh `telemetry_received_at` for 60 seconds as:
 
 ```text
 status=OFFLINE
@@ -1929,9 +2108,17 @@ The `expire-stale-robot-commands` Supabase Cron job runs once per minute. It ato
 
 Commands already in `ACKNOWLEDGED`, `COMPLETED`, `REJECTED`, `FAILED`, or `EXPIRED` are not changed. Expiration also does not retry the command or change its delivery or robot state: a missing acknowledgement does not prove that the robot never received the command. Any retry or delivery recovery must be an explicit, separately validated action.
 
+`PUBLISH_UNKNOWN` is also intentionally excluded from automatic expiration.
+Its external call may have succeeded, so it remains a command/reservation
+barrier until identical robot ACK/event evidence reconciles it or staff confirms
+through the explicit reconciliation path that it was not published.
+
 ### 28.5 Deployment and verification status
 
-As of 2026-07-19, deployment checklist steps 1 through 8 have been completed, from deploying the updated frontend through verifying the database.
+As of the 21 July 2026 audit, deployment checklist steps 1 through 8 had been
+completed, from deploying the frontend through verifying the then-current
+database. This is dated evidence, not a claim that the new local migrations or
+functions are deployed.
 
 Step 9, **Test the web workflow**, is blocked at dispatch. Clicking **Dispatch mission** creates the `START_MISSION` audit command, but the delivery does not change from `ASSIGNED` to `DISPATCHED`.
 
@@ -1947,13 +2134,39 @@ A live Pi/broker audit on 21 July 2026 added independent evidence:
 - The deployed Pi agent maintained MQTT/TLS connectivity and published a
   retained online presence plus a new heartbeat every 15 seconds.
 - A separate read-only MQTT client received those broker messages.
-- Immediately afterward, Supabase still reported the old 18 July
-  `robots.last_seen` value and no telemetry timestamp. The EMQX rule/action is
-  therefore not delivering the live return path to `ingest-robot-message`.
+- Immediately afterward, Supabase recorded no fresh bridge-connectivity
+  evidence. The null telemetry timestamp separately matched the absence of a
+  mission-manager state file. The EMQX return action still requires repair and
+  a response-metric verification.
 - The robot identity received successful subscriptions outside its intended
   own-topic scope, proving that EMQX authorization is not yet default-deny.
 
-This proves that the browser reached `dispatch-delivery`, authentication and staff authorization passed, and the command row was inserted. EMQX then rejected the Deployment API publish request with HTTP 403. The Edge Function intentionally changes a delivery to `DISPATCHED` only after EMQX accepts the publish.
+This proves that the browser reached `dispatch-delivery`, authentication and staff authorization passed, and the command row was inserted. EMQX then rejected the Deployment API publish request with HTTP 403. The Edge Function intentionally changes a delivery to `DISPATCHED` only after EMQX confirms a publish to a matching subscriber. HTTP 202 with `no_matching_subscribers` is also a non-delivery and must leave the delivery `ASSIGNED`.
+
+A separate operator-reported controlled test from the historical Pi guide did
+reach the earlier bridge. Read-only Pi evidence confirms a valid legacy
+`START_MISSION` request containing the required command, delivery, route, map,
+and timestamp fields; the same command ID exists in the durable processed-command
+database. This is evidence of one completed cloud-to-Pi dispatch/handoff test.
+It does not change the HTTP 403 evidence for the other audit rows and does not
+represent physical or autonomous delivery completion.
+
+After the read-only audit, a user-authorized maintenance pass installed the
+exact local Pi follow-up bundle as `pi-agent-1.3.0`. All 27 Pi tests passed on
+the installed source as `rover`; systemd verification passed; the service
+restarted with zero observed restarts; MQTT connected and accepted the command
+subscription; and an `ESP32_DISCONNECTED` event moved through the durable
+outbox to the archive after broker acceptance. The Pi checkout is intentionally
+dirty because this exact follow-up bundle has not yet been committed and pushed.
+Migration `202607210010` was not applied to the linked database, and the
+append-only `202607210011` plus the current Edge changes remain local and
+Docker-unverified. Run the full local integration suite before any
+database/function deployment.
+
+The current local dispatch function now inserts `PUBLISH_UNKNOWN` before its
+EMQX call and atomically finalizes publication/dispatch. That behavior is not in
+the stale deployed function and has not yet been verified by Docker-backed
+pgTAP or a live broker smoke test.
 
 To unblock step 9:
 
@@ -1961,12 +2174,17 @@ To unblock step 9:
 2. Use its **App ID** and **App Secret**, not an MQTT client username/password or a platform-level API key.
 3. Confirm that the configured API endpoint is the Broker Deployment API for this deployment. With the current function, the final publish URL must resolve to `https://EMQX_API_HOST/api/v5/publish`.
 4. Replace `EMQX_API_URL`, `EMQX_API_KEY`, and `EMQX_API_SECRET` in Supabase Edge Function Secrets. Supabase makes updated secrets available without redeploying the function.
-5. Retry dispatch and verify that the new command is `PUBLISHED`, its `published_at` is populated, and the delivery becomes `DISPATCHED`.
+5. Retry dispatch and verify that the command is `PUBLISHED` (or already
+   `ACKNOWLEDGED`/`COMPLETED` from racing robot evidence), its `published_at` is
+   populated, and the delivery becomes `DISPATCHED`. A timeout/5xx command that
+   remains `PUBLISH_UNKNOWN` must be reconciled, not blindly retried. An HTTP
+   202 response with `no_matching_subscribers` must instead record the command
+   as `FAILED`, leave `published_at` null, and keep the delivery `ASSIGNED`.
 6. Inspect the EMQX rule action metrics and latest failure. Repair its URL,
    `x-emqx-secret`, body template, or action binding until a Pi presence
    heartbeat changes `robots.bridge_last_seen` within 15 seconds. Then publish
-   a valid fresh state snapshot and verify that `robots.last_seen` and
-   `telemetry_at` also advance.
+   a valid fresh state snapshot and verify that `robots.last_seen`,
+   `telemetry_received_at`, and `telemetry_at` also advance.
 7. Replace permissive authorization with explicit per-robot rules: subscribe
    only to `miit/robots/{robotId}/commands`, publish only to that robot's
    `acks`, `state`, `events`, and `presence`, then default deny unmatched
@@ -1974,20 +2192,29 @@ To unblock step 9:
 
 ## 29. Raspberry Pi deployment status and work remaining
 
-The updated `robot-pi/agent.py` is a transport and handoff process. A read-only
-live audit on 21 July 2026 verified that `robot-01` is running the repository
-bridge under an enabled systemd service, has a persistent USB serial adapter,
-maintains MQTT/TLS port 8883 connectivity, and publishes retained presence plus
-15-second heartbeats. No credentials are recorded in this document.
+The updated `robot-pi/agent.py` is a transport and handoff process. An initial
+read-only audit on 21 July 2026 found the old repository bridge. A subsequent
+authorized deployment installed and restarted `pi-agent-1.3.0`, verified all
+27 tests on the Pi, confirmed the MQTT/TLS command subscription, observed zero
+service restarts, enabled the clock-wait service, and hardened configuration
+ownership. The device was absent at bridge startup; a later read-only check
+found the persistent USB serial link and permissions present, but no successful
+post-start ESP32 handshake was recorded. The active one-owner serial session
+must therefore be re-verified before relying on that transport. No secret
+credential or private infrastructure value is recorded here.
 
-That audit did **not** verify a complete robot. Supabase received none of the
-observed Pi heartbeats, recent web commands still failed at the EMQX Deployment
-API with HTTP 403 before MQTT publication, and the robot MQTT account was able
-to subscribe beyond its required topic scope. The Pi also had no
-`robot_state.json` or mission-event output, so the mission manager, telemetry,
+That deployment does **not** verify a complete robot. The updated agent
+successfully archived one broker-accepted disconnect safety event, but the
+EMQX-to-Supabase HTTP action was not reverified; recent web commands had also
+failed at the EMQX Deployment API with HTTP 403, and the robot MQTT account was
+able to subscribe beyond its required topic scope. The Pi still has no
+`robot_state.json` or mission-event producer, so the mission manager, telemetry,
 event-driven delivery progression, ESP32 watchdog, and physical safety remain
-unverified. The steps below separate the installed base bridge from the work
-still needed for a complete robot.
+unverified. The local v0.2 ESP32 source has not been compiled, flashed, or
+hardware-tested, and the final single serial-port owner is unresolved. The Pi
+Git checkout is intentionally dirty because the exact deployed working-tree
+bundle is not yet committed. The steps below separate the installed base bridge
+from the work still needed for a complete robot.
 
 ### 29.1 Provision the operating system
 
@@ -2014,21 +2241,30 @@ Recommended filesystem layout:
 /opt/miit-rover/source/robot-pi/.venv/  Python environment
 /etc/miit-rover/robot.env        root-owned secrets
 /var/lib/miit-rover/             persistent runtime state
+/var/lib/miit-rover/command-inbox one-file-per-command handoff
+/var/lib/miit-rover/command-archive consumed command records
 /var/lib/miit-rover/event-outbox mission event queue
 /var/lib/miit-rover/event-archive broker-accepted event audit/replay archive
+/var/lib/miit-rover/ack-outbox durable command acknowledgement queue
+/var/lib/miit-rover/ack-archive broker-accepted acknowledgement archive
 ```
 
 Installation:
 
 ```bash
-sudo install -d -o rover -g rover -m 0750 /opt/miit-rover
+sudo install -d -o root -g root -m 0755 /opt/miit-rover
 sudo install -d -o root -g rover -m 0750 /etc/miit-rover
 sudo install -d -o rover -g rover -m 0750 /var/lib/miit-rover
+sudo install -d -o rover -g rover -m 0750 /var/lib/miit-rover/command-inbox
+sudo install -d -o rover -g rover -m 0750 /var/lib/miit-rover/command-archive
 sudo install -d -o rover -g rover -m 0750 /var/lib/miit-rover/event-outbox
 sudo install -d -o rover -g rover -m 0750 /var/lib/miit-rover/event-archive
+sudo install -d -o rover -g rover -m 0750 /var/lib/miit-rover/ack-outbox
+sudo install -d -o rover -g rover -m 0750 /var/lib/miit-rover/ack-archive
 cd /opt/miit-rover/source/robot-pi
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+sudo python3 -m venv .venv
+sudo .venv/bin/pip install -r requirements.txt
+sudo chown -R root:root /opt/miit-rover/source
 ```
 
 Keep `robot.env` root-owned and mode `0600`. The Python process opens the CA
@@ -2046,15 +2282,21 @@ MQTT_PORT=8883
 MQTT_USERNAME=robot-01
 MQTT_PASSWORD=UNIQUE_PER_ROBOT_PASSWORD
 MQTT_CA_FILE=/etc/ssl/certs/ca-certificates.crt
-ESP32_SERIAL_PORT=/dev/ttyUSB0
+ESP32_SERIAL_PORT=/dev/serial/by-id/YOUR_ESP32_DEVICE
 ROBOT_STATE_DIR=/var/lib/miit-rover
-ROBOT_AGENT_VERSION=pi-agent-1.2.0
+ROBOT_AGENT_VERSION=pi-agent-1.3.0
+ROBOT_REQUIRE_TIME_SYNC=true
+TIME_SYNC_RETRY_SECONDS=5
 PRESENCE_INTERVAL_SECONDS=15
 STATE_INTERVAL_SECONDS=5
 ROBOT_STATE_MAX_AGE_SECONDS=15
+ROBOT_COMMAND_INBOX=/var/lib/miit-rover/command-inbox
+ROBOT_COMMAND_ARCHIVE=/var/lib/miit-rover/command-archive
 ROBOT_STATE_FILE=/var/lib/miit-rover/robot_state.json
 ROBOT_EVENT_OUTBOX=/var/lib/miit-rover/event-outbox
 ROBOT_EVENT_ARCHIVE=/var/lib/miit-rover/event-archive
+ROBOT_ACK_OUTBOX=/var/lib/miit-rover/ack-outbox
+ROBOT_ACK_ARCHIVE=/var/lib/miit-rover/ack-archive
 ```
 
 Protect it:
@@ -2066,35 +2308,18 @@ sudo chmod 600 /etc/miit-rover/robot.env
 
 ### 29.3 Run the bridge with systemd
 
-Create `/etc/systemd/system/miit-rover-agent.service`:
+Install the maintained template rather than copying a second unit definition
+from documentation. This keeps its path guards, timeout, restrictive umask, and
+hardening settings synchronized with the source:
 
-```ini
-[Unit]
-Description=MIIT Rover MQTT bridge
-After=network-online.target time-sync.target
-Wants=network-online.target time-sync.target
-
-[Service]
-Type=simple
-User=rover
-Group=rover
-SupplementaryGroups=dialout
-WorkingDirectory=/opt/miit-rover/source/robot-pi
-EnvironmentFile=/etc/miit-rover/robot.env
-ExecStart=/opt/miit-rover/source/robot-pi/.venv/bin/python /opt/miit-rover/source/robot-pi/agent.py
-Restart=always
-RestartSec=3
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/lib/miit-rover
-
-[Install]
-WantedBy=multi-user.target
+```bash
+sudo install -o root -g root -m 0644 \
+  /opt/miit-rover/source/robot-pi/miit-rover-agent.service \
+  /etc/systemd/system/miit-rover-agent.service
+sudo systemd-analyze verify /etc/systemd/system/miit-rover-agent.service
 ```
 
-The maintained template is `robot-pi/miit-rover-agent.service`. Verify
+Verify
 `timedatectl show -p NTPSynchronized` before accepting commands and enable the
 OS time-wait service; the live audit showed that the system clock was corrected
 after the bridge initially started, so network availability and ordering after
@@ -2115,7 +2340,7 @@ Success criteria:
 - The client subscribes only to its command topic.
 - Retained presence is online.
 - Supabase updates `bridge_last_seen` from presence; a valid fresh state
-  snapshot updates `last_seen` and `telemetry_at`.
+  snapshot updates `last_seen`, `telemetry_received_at`, and `telemetry_at`.
 - Stopping the service produces offline presence or the database timeout marks it offline.
 
 ### 29.4 Implement the mission manager
@@ -2134,8 +2359,12 @@ Create a second local process rather than adding navigation logic to `agent.py`.
 7. Write each mission transition to a separate event-outbox file and monitor
    the broker-accepted archive until EMQX HTTP-action health is confirmed.
 8. Preserve the cloud `commandId` and `deliveryId` in all mission events.
-9. Resume safely after a Pi reboot without repeating cargo or motion actions.
-10. Stop locally if the ESP32 heartbeat, LiDAR, localization, motor feedback, or physical E-stop becomes unhealthy.
+9. For `RESUME`, keep motion disarmed, require the nearby operator's local
+   ESP32 reset and fresh safe telemetry, then publish one linked `RESUMED` event
+   containing `payload.localSafetyChecksPassed=true`. The current repository has
+   no deployed process that performs this step, so the reset path is incomplete.
+10. Resume safely after a Pi reboot without repeating cargo or motion actions.
+11. Stop locally if the ESP32 heartbeat, LiDAR, localization, motor feedback, or physical E-stop becomes unhealthy.
 
 Minimum state machine:
 
@@ -2218,27 +2447,39 @@ Stable result for a short confirmation interval
 
 ### 29.6 Complete the Pi-to-ESP32 protocol
 
-The current bridge sends a newline-delimited JSON STOP frame. Replace or extend this with a versioned protocol containing:
+The current Pi bridge sends only the newline-delimited timed `STOP` and latching
+`ESTOP` safety frames. The local v0.2 commissioning firmware under
+`MIIT_Rover_ESP32_Firmware_v0.2.0/robot-esp32/` additionally defines protected
+`ARM`, `HEARTBEAT`, and `DRIVE` frames with a boot session, increasing sequence,
+short TTL, and CRC-16, plus ESP32 ACK/NACK and state output. That source has not
+been compiled, flashed, or hardware-verified.
+
+The final base-controller/mission-manager integration must still provide:
 
 ```text
-protocol version
-sequence number
-command type
-left/right target velocity or steering target
-short expiry/TTL
-CRC or equivalent frame-integrity check
-ESP32 acknowledgement sequence
+exactly one serial-port owner
+protected ARM/HEARTBEAT/DRIVE publication
+ESP32 acknowledgement/state parsing
 ESP32 measured wheel speeds
+encoder/odometry feedback
 fault flags
 hardware E-stop state
 battery and motor measurements
 ```
 
-The Pi must send a local heartbeat much faster than the cloud heartbeat, for example every 50-100 ms. The ESP32 should stop motor output if that heartbeat is absent for a tested short timeout.
+Do not let both `agent.py` and a navigation process open the port. Select a
+single base-controller/gateway first, then route MQTT safety requests and local
+navigation targets through it. The Pi must send a local heartbeat much faster
+than the cloud heartbeat, for example every 50-100 ms, and measured testing must
+prove that loss of this stream stops and disarms the ESP32 within the intended
+timeout.
 
 ### 29.7 ESP32 safety requirements
 
-Before enabling motors, implement and test:
+The v0.2 source contains fail-safe boot, heartbeat/drive expiry, sequence/CRC
+checks, latching ESTOP, and local-reset logic. None is a verified hardware
+control until the sketch compiles, is flashed, an active one-owner USB serial
+session is verified, and the following tests pass:
 
 - Motor outputs disabled after boot.
 - Physical E-stop wired independently of cloud software.
@@ -2315,8 +2556,8 @@ The migration intentionally does not turn old deliveries or old robot events int
 
 ## 31. Automated Supabase/EMQX integration testing update
 
-Item 7 adds two local integration layers without using production credentials
-or production data.
+Item 7 adds database, webhook, and command-publish response test layers without
+using production credentials or production data.
 
 ### 31.1 PostgreSQL and RLS tests
 
@@ -2327,13 +2568,18 @@ notification RLS boundaries, profile role restrictions, notification
 visibility after staff demotion, telemetry ordering, event idempotency,
 lifecycle transitions, command expiration, and stale heartbeat behavior.
 
-Migrations `202607200008_require_dispatched_mission_start.sql` and
-`202607200009_serialize_mission_start.sql` are part of this test boundary. The
-before-insert guard rejects a new `MISSION_STARTED` event unless the linked
-delivery is already `DISPATCHED` and assigned to the publishing robot. The
-follow-up migration locks that delivery during validation, so concurrent
-events cannot both advance it. A replay using an existing `message_id` is still
-accepted as an idempotent duplicate.
+Migrations `202607200008_require_dispatched_mission_start.sql`,
+`202607200009_serialize_mission_start.sql`, and
+`202607210011_robot_ingestion_safety_followup.sql` are part of this test
+boundary. The current guard normally requires `DISPATCHED`, with only the
+documented `ASSIGNED`/valid-reserved-command exception when robot evidence wins
+the publish-response race. Robot/delivery locks prevent concurrent events or
+commands from advancing/reserving the same work twice. Only a replay whose
+robot, delivery, command, type, severity, payload, and occurrence time are all
+identical is accepted as an idempotent duplicate; conflicting content under the
+same `message_id` is rejected. `007_command_publish.sql` covers
+`PUBLISH_UNKNOWN`, publish reconciliation, atomic finalization, and reservation
+races.
 
 ### 31.2 EMQX HTTP action contract
 
@@ -2361,6 +2607,17 @@ ingestion handler and local PostgreSQL behavior. It is not a broker emulator:
 EMQX rule matching, connector TLS, broker ACLs, retry queues, and the Pi MQTT
 client still require a live deployment smoke test.
 
+The live rule SQL must derive `mqttMessageId` with `bin2hexstr(id)` because the
+EMQX source field is binary, and the HTTP body must keep the resulting template
+quoted. Separately, a dispatch smoke test must prove that EMQX HTTP 202
+`no_matching_subscribers` is handled as a failed non-delivery and never advances
+the delivery to `DISPATCHED`.
+
+`supabase/tests/integration/emqx-publish-response.test.mjs` exercises the pure
+status classifier without Docker. It proves that only HTTP 200 is delivered,
+HTTP 202 is `NO_MATCHING_SUBSCRIBERS`, known request-rejection statuses are
+definitive failures, and ambiguous/unrecognized statuses stay conservative.
+
 ### 31.3 Running the suite
 
 Prerequisites:
@@ -2372,8 +2629,13 @@ Prerequisites:
 Run all local database and webhook integration checks:
 
 ```bash
+npm run test:emqx-publish
 npm run test:integration
 ```
+
+Current status: the Docker-backed pgTAP and Edge Function run has not yet been
+completed with the local `011` migration. Fast tests are not a substitute for
+this deployment gate.
 
 The runner:
 
@@ -2402,11 +2664,19 @@ create a new Docker namespace for every run.
 suite on Ubuntu with Node.js 20. It has read-only repository permissions and
 does not receive Supabase or EMQX secrets.
 
-### 31.4 Raspberry Pi message-contract tests
+### 31.4 Raspberry Pi and ESP32 host tests
 
 `robot-pi/test_message_contract.py` uses only the Python standard library and
 tests the pure helpers in `message_contract.py`. It verifies the same robot-ID
 shape, timestamp horizon, UUID format, telemetry enums/ranges, mission-event
 linkage, and JSON-object requirements enforced by `ingest-robot-message`.
-The CI Pi job also byte-compiles `agent.py`; it does not connect to MQTT or
-serial hardware and receives no robot credentials.
+`test_local_store.py` covers atomic command/outbox storage and recovery, while
+`test_agent.py` covers command execution ordering, durable ACK handling,
+conflicting replay behavior, and distinct STOP/ESTOP frames. The CI Pi job also
+byte-compiles the bridge sources.
+
+`npm run test:esp32` runs the firmware package's host-side CRC and JSON framing
+vectors and verifies that motion requires a matching positive acknowledgement.
+Neither Pi nor ESP32 tests connect to MQTT or serial hardware, compile or flash
+the Arduino sketch, or receive robot credentials. The commissioning source
+therefore remains uncompiled, unflashed, and hardware-unverified.

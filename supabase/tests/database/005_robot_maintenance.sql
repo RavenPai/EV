@@ -3,12 +3,15 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions;
 
-select plan(15);
+select plan(17);
 
 update public.robots
 set
   status = 'OFFLINE',
-  last_seen = now();
+  last_seen = now(),
+  telemetry_at = now(),
+  telemetry_received_at = now(),
+  bridge_online = false;
 
 insert into public.robots (
   id,
@@ -24,7 +27,9 @@ insert into public.robots (
   camera,
   esp32,
   motor_temp_c,
-  last_seen
+  last_seen,
+  telemetry_at,
+  telemetry_received_at
 )
 values
   (
@@ -41,6 +46,8 @@ values
     'OFFLINE',
     'OFFLINE',
     30,
+    now(),
+    now(),
     now()
   ),
   (
@@ -57,6 +64,8 @@ values
     'OK',
     'OK',
     38,
+    now() - interval '61 seconds',
+    now() + interval '5 minutes',
     now() - interval '61 seconds'
   ),
   (
@@ -73,6 +82,8 @@ values
     'WARNING',
     'WARNING',
     45,
+    null,
+    null,
     null
   ),
   (
@@ -89,6 +100,8 @@ values
     'OK',
     'OK',
     32,
+    now(),
+    now(),
     now()
   ),
   (
@@ -105,6 +118,8 @@ values
     'OFFLINE',
     'OFFLINE',
     30,
+    now() - interval '10 minutes',
+    now() - interval '10 minutes',
     now() - interval '10 minutes'
   );
 
@@ -148,11 +163,23 @@ values
     '{}'::jsonb,
     'PENDING',
     now() + interval '5 minutes'
+  ),
+  (
+    '40000000-0000-0000-0000-000000000005',
+    'test-maintenance-robot',
+    'TEST_PUBLISHED_LATE_EVIDENCE',
+    '{}'::jsonb,
+    'PUBLISHED',
+    now() - interval '2 minutes'
   );
+
+update public.robot_commands
+set issued_at = now() - interval '3 minutes'
+where id = '40000000-0000-0000-0000-000000000005';
 
 select is(
   public.expire_stale_robot_commands(),
-  2,
+  3,
   'command expiration processes expired PENDING and PUBLISHED commands'
 );
 
@@ -174,6 +201,28 @@ select is(
   ),
   'EXPIRED',
   'an expired PUBLISHED command becomes EXPIRED'
+);
+
+select is(
+  public.apply_robot_ack(
+    '40000000-0000-0000-0000-000000000005',
+    'test-maintenance-robot',
+    'ACKNOWLEDGED',
+    'accepted before expiry; webhook was delayed',
+    now() - interval '2 minutes 1 second'
+  ),
+  true,
+  'on-time robot evidence reconciles after the expiration cron race'
+);
+
+select is(
+  (
+    select status
+    from public.robot_commands
+    where id = '40000000-0000-0000-0000-000000000005'
+  ),
+  'ACKNOWLEDGED',
+  'the delayed on-time acknowledgement restores the command audit state'
 );
 
 select is(
@@ -202,12 +251,13 @@ select is(
     from public.robot_events
     where command_id in (
       '40000000-0000-0000-0000-000000000001',
-      '40000000-0000-0000-0000-000000000002'
+      '40000000-0000-0000-0000-000000000002',
+      '40000000-0000-0000-0000-000000000005'
     )
       and event_type = 'COMMAND_EXPIRED'
       and severity = 'WARNING'
   ),
-  2,
+  3,
   'each expired command produces a warning event'
 );
 

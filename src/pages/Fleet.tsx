@@ -8,12 +8,14 @@ export function Fleet() {
   const { robots, deliveries, sendRobotCommand } = useApp();
   const [selectedId, setSelectedId] = useState(robots[0]?.id);
   const [confirmEstop, setConfirmEstop] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
   const selected = robots.find((robot) => robot.id === selectedId) ?? robots[0];
   const mission = useMemo(() => deliveries.find((delivery) => delivery.id === selected?.currentDeliveryId), [deliveries, selected]);
   const [sending, setSending] = useState(false);
+  const safetyLatched = selected.mode === "ESTOP" || selected.mode === "FAULT";
   const command = async (value: "PAUSE" | "RESUME" | "RETURN_HOME" | "ESTOP") => {
     setSending(true);
-    try { await sendRobotCommand(selected.id, value); } finally { setSending(false); setConfirmEstop(false); }
+    try { await sendRobotCommand(selected.id, value); } finally { setSending(false); setConfirmEstop(false); setConfirmReset(false); }
   };
 
   return (
@@ -54,9 +56,9 @@ export function Fleet() {
           <div className="panel-heading"><div><span className="eyebrow">Mission controls</span><h3>Authorized safe commands</h3></div><ShieldAlert size={21} className="heading-icon" /></div>
           <p className="command-intro">Controls create signed, expiring commands. The robot confirms each command before the interface changes state.</p>
           <div className="command-buttons">
-            {selected.mode === "PAUSED" ? <button className="command-button command-resume" disabled={sending} onClick={() => void command("RESUME")}><span><Play size={20} /></span><div><strong>Resume mission</strong><small>Continue local navigation</small></div></button> : <button className="command-button" disabled={sending || selected.mode === "ESTOP"} onClick={() => void command("PAUSE")}><span><Pause size={20} /></span><div><strong>Pause safely</strong><small>Stop and retain mission state</small></div></button>}
-            <button className="command-button" disabled={sending || selected.mode === "ESTOP"} onClick={() => void command("RETURN_HOME")}><span><RotateCcw size={20} /></span><div><strong>Return home</strong><small>Navigate to robot station</small></div></button>
-            <button className="command-button command-estop" disabled={sending} onClick={() => setConfirmEstop(true)}><span><AlertOctagon size={20} /></span><div><strong>Emergency stop</strong><small>Stop motion and require reset</small></div></button>
+            {safetyLatched ? <button className="command-button command-resume" disabled={sending} onClick={() => setConfirmReset(true)}><span><Play size={20} /></span><div><strong>Request inspected reset</strong><small>Robot must pass local safety checks</small></div></button> : selected.mode === "PAUSED" ? <button className="command-button command-resume" disabled={sending} onClick={() => void command("RESUME")}><span><Play size={20} /></span><div><strong>Resume mission</strong><small>Continue local navigation</small></div></button> : <button className="command-button" disabled={sending} onClick={() => void command("PAUSE")}><span><Pause size={20} /></span><div><strong>Pause safely</strong><small>Stop and retain mission state</small></div></button>}
+            <button className="command-button" disabled={sending || safetyLatched} onClick={() => void command("RETURN_HOME")}><span><RotateCcw size={20} /></span><div><strong>Return home</strong><small>Navigate to robot station</small></div></button>
+            <button className="command-button command-estop" disabled={sending || safetyLatched} onClick={() => setConfirmEstop(true)}><span><AlertOctagon size={20} /></span><div><strong>Emergency stop</strong><small>Stop motion and require reset</small></div></button>
           </div>
           <div className="manual-control-lock"><ShieldAlert size={17} /><div><strong>Continuous motor control is disabled on the public web app.</strong><p>Manual driving must use an authenticated nearby operator on the robot's local network.</p></div></div>
         </article>
@@ -68,6 +70,7 @@ export function Fleet() {
       </section>
 
       {confirmEstop && <div className="modal-layer"><button className="modal-backdrop" onClick={() => setConfirmEstop(false)} aria-label="Close confirmation" /><div className="confirm-modal"><div className="danger-icon"><AlertOctagon size={28} /></div><h2>Emergency-stop {selected.name}?</h2><p>This requests an immediate controlled stop and changes the robot to ESTOP. A nearby operator must inspect and reset the vehicle.</p><div><button className="button button-ghost" onClick={() => setConfirmEstop(false)}>Cancel</button><button className="button button-danger" onClick={() => void command("ESTOP")}>Confirm emergency stop</button></div></div></div>}
+      {confirmReset && <div className="modal-layer"><button className="modal-backdrop" onClick={() => setConfirmReset(false)} aria-label="Close confirmation" /><div className="confirm-modal"><div className="danger-icon"><ShieldAlert size={28} /></div><h2>Request reset for {selected.name}?</h2><p>Continue only after a nearby operator has inspected the vehicle, released the physical E-stop, performed the local ESP32 reset, and confirmed the robot is healthy, disarmed, and the route is clear. The database remains latched until the robot passes its local checks and publishes a linked RESUMED event.</p><div><button className="button button-ghost" onClick={() => setConfirmReset(false)}>Cancel</button><button className="button button-danger" disabled={sending} onClick={() => void command("RESUME")}>Inspection complete — request reset</button></div></div></div>}
     </div>
   );
 }

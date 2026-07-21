@@ -45,6 +45,19 @@ const asNumber = (
   return value;
 };
 
+const asInteger = (
+  value: unknown,
+  field: string,
+  minimum: number,
+  maximum: number,
+): number => {
+  const number = asNumber(value, field, minimum, maximum);
+  if (!Number.isInteger(number)) {
+    throw new HttpError(400, `${field} must be an integer`);
+  }
+  return number;
+};
+
 const asUuid = (value: unknown, field: string): string => {
   const text = asString(value, field);
   if (
@@ -67,6 +80,13 @@ const asTimestamp = (
   maximumAgeMs?: number,
 ): string => {
   const text = asString(value, field);
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(
+      text,
+    )
+  ) {
+    throw new HttpError(400, `${field} must be an ISO-8601 timestamp with a timezone`);
+  }
   const timestamp = Date.parse(text);
   if (!Number.isFinite(timestamp)) {
     throw new HttpError(400, `${field} must be an ISO-8601 timestamp`);
@@ -80,6 +100,57 @@ const asTimestamp = (
   return new Date(timestamp).toISOString();
 };
 
+const assertPayloadKeys = (
+  payload: JsonObject,
+  required: readonly string[],
+  optional: readonly string[] = [],
+) => {
+  const allowed = new Set([...required, ...optional]);
+  const missing = required.filter((key) => !(key in payload));
+  const unexpected = Object.keys(payload).filter((key) => !allowed.has(key));
+  if (missing.length > 0) {
+    throw new HttpError(400, `MQTT payload is missing: ${missing.join(", ")}`);
+  }
+  if (unexpected.length > 0) {
+    throw new HttpError(
+      400,
+      `MQTT payload has unsupported fields: ${unexpected.join(", ")}`,
+    );
+  }
+};
+
+const optionalString = (
+  value: unknown,
+  field: string,
+  maximumLength: number,
+): string | null => {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string" || value.length > maximumLength) {
+    throw new HttpError(
+      400,
+      `${field} must be a string up to ${maximumLength} characters`,
+    );
+  }
+  return value;
+};
+
+const asBrokerTimestamp = (value: unknown): string => {
+  const timestamp = asInteger(
+    value,
+    "timestamp",
+    0,
+    Number.MAX_SAFE_INTEGER,
+  );
+  if (timestamp > Date.now() + 5 * 60_000) {
+    throw new HttpError(400, "timestamp is too far in the future");
+  }
+  const observedAt = new Date(timestamp);
+  if (!Number.isFinite(observedAt.getTime())) {
+    throw new HttpError(400, "timestamp is outside the supported range");
+  }
+  return observedAt.toISOString();
+};
+
 const constantTimeEqual = (left: string, right: string): boolean => {
   const encoder = new TextEncoder();
   const a = encoder.encode(left);
@@ -91,6 +162,49 @@ const constantTimeEqual = (left: string, right: string): boolean => {
     difference |= a[index] ^ b[index];
   }
   return difference === 0;
+};
+
+const MAX_REQUEST_BYTES = 64 * 1024;
+
+const readLimitedBody = async (request: Request): Promise<string> => {
+  const declaredLength = request.headers.get("content-length");
+  if (declaredLength !== null) {
+    if (!/^\d+$/.test(declaredLength)) {
+      throw new HttpError(400, "Invalid Content-Length");
+    }
+    if (Number(declaredLength) > MAX_REQUEST_BYTES) {
+      throw new HttpError(413, "Request body is too large");
+    }
+  }
+
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_REQUEST_BYTES) {
+      await reader.cancel();
+      throw new HttpError(413, "Request body is too large");
+    }
+    chunks.push(value);
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new HttpError(400, "Request body must be UTF-8");
+  }
 };
 
 const parsePayload = (value: unknown): JsonObject => {
@@ -127,17 +241,24 @@ const allowedEventTypes = new Set([
   "BRIDGE_FAULT",
 ]);
 
+const missionEventTypes = new Set([
+  "MISSION_STARTED",
+  "ARRIVED_SOURCE",
+  "PACKAGE_LOADED",
+  "DEPARTED_SOURCE",
+  "ARRIVED_DESTINATION",
+  "PACKAGE_RELEASED",
+  "RETURNING_HOME",
+  "MISSION_COMPLETED",
+  "MISSION_FAILED",
+]);
+
 Deno.serve(async (request) => {
   if (request.method !== "POST") {
     return json({ error: "Method not allowed" }, 405);
   }
 
   try {
-    const contentLength = Number(request.headers.get("content-length") ?? "0");
-    if (contentLength > 64 * 1024) {
-      throw new HttpError(413, "Request body is too large");
-    }
-
     const expectedSecret = Deno.env.get("ROBOT_INGEST_SECRET") ?? "";
     const suppliedSecret = request.headers.get("x-emqx-secret") ?? "";
     if (
@@ -148,9 +269,10 @@ Deno.serve(async (request) => {
       throw new HttpError(401, "Unauthorized");
     }
 
+    const requestText = await readLimitedBody(request);
     let body: unknown;
     try {
-      body = await request.json();
+      body = JSON.parse(requestText);
     } catch {
       throw new HttpError(400, "Request body is not valid JSON");
     }
@@ -158,11 +280,27 @@ Deno.serve(async (request) => {
       throw new HttpError(400, "Webhook body must be a JSON object");
     }
 
+    assertPayloadKeys(body, [
+      "mqttMessageId",
+      "topic",
+      "payload",
+      "clientid",
+      "username",
+      "qos",
+      "timestamp",
+    ]);
+    const mqttMessageId = asString(body.mqttMessageId, "mqttMessageId");
+    if (mqttMessageId.length > 256) {
+      throw new HttpError(400, "mqttMessageId is too long");
+    }
+
     const topic = asString(body.topic, "topic");
     const username = asString(body.username, "username");
     const clientId = asString(body.clientid, "clientid");
-    asNumber(body.qos, "qos", 0, 2);
-    asNumber(body.timestamp, "timestamp", 0, Number.MAX_SAFE_INTEGER);
+    if (asInteger(body.qos, "qos", 0, 2) !== 1) {
+      throw new HttpError(400, "Robot messages require MQTT QoS 1");
+    }
+    const brokerObservedAt = asBrokerTimestamp(body.timestamp);
     const topicMatch = topic.match(
       /^miit\/robots\/([a-z0-9][a-z0-9-]{0,63})\/(acks|state|events|presence)$/,
     );
@@ -204,6 +342,11 @@ Deno.serve(async (request) => {
     let stale = false;
 
     if (messageType === "acks") {
+      assertPayloadKeys(
+        payload,
+        ["schemaVersion", "robotId", "commandId", "status", "at"],
+        ["reason"],
+      );
       const commandId = asUuid(payload.commandId, "commandId");
       const status = asString(payload.status, "status");
       const at = asTimestamp(payload.at);
@@ -224,22 +367,38 @@ Deno.serve(async (request) => {
         throw new HttpError(403, "Command belongs to another robot");
       }
 
-      const commandPatch: JsonObject = {
-        status,
-        acknowledged_at: at,
-        result: {
-          reason: typeof payload.reason === "string" ? payload.reason : "",
-          at,
-        },
-      };
-
-      const { error } = await admin
-        .from("robot_commands")
-        .update(commandPatch)
-        .eq("id", commandId)
-        .in("status", ["PENDING", "PUBLISHED", "ACKNOWLEDGED"]);
-      if (error) throw error;
+      const { data, error } = await admin.rpc("apply_robot_ack", {
+        p_command_id: commandId,
+        p_robot_id: robotId,
+        p_status: status,
+        p_reason: optionalString(payload.reason, "reason", 240) ?? "",
+        p_occurred_at: at,
+      });
+      if (error) {
+        if (error.code === "P0001") throw new HttpError(409, error.message);
+        throw error;
+      }
+      duplicate = data === false;
     } else if (messageType === "state") {
+      assertPayloadKeys(
+        payload,
+        [
+          "schemaVersion",
+          "robotId",
+          "status",
+          "mode",
+          "battery",
+          "signal",
+          "speedMps",
+          "currentDeliveryId",
+          "lidar",
+          "camera",
+          "esp32",
+          "motorTempC",
+          "at",
+        ],
+        ["locationId", "firmwareVersion"],
+      );
       const status = asString(payload.status, "status");
       const mode = asString(payload.mode, "mode");
       if (
@@ -261,20 +420,30 @@ Deno.serve(async (request) => {
         }
       }
 
-      const { data, error } = await admin.rpc("apply_robot_state", {
+      const locationId = optionalString(payload.locationId, "locationId", 128);
+      if (locationId !== null && !locationId.trim()) {
+        throw new HttpError(400, "locationId must be non-empty when provided");
+      }
+      const firmwareVersion = optionalString(
+        payload.firmwareVersion,
+        "firmwareVersion",
+        80,
+      );
+
+      const { data, error } = await admin.rpc("apply_robot_state_observed", {
         p_robot_id: robotId,
         p_observed_at: asTimestamp(payload.at, "at", 60_000),
+        p_broker_observed_at: brokerObservedAt,
         p_status: status,
         p_mode: mode,
-        p_battery: Math.round(asNumber(payload.battery, "battery", 0, 100)),
-        p_signal: Math.round(asNumber(payload.signal, "signal", 0, 100)),
+        p_battery: asInteger(payload.battery, "battery", 0, 100),
+        p_signal: asInteger(payload.signal, "signal", 0, 100),
         p_speed_mps: asNumber(payload.speedMps, "speedMps", 0, 5),
-        p_location_id: typeof payload.locationId === "string"
-          ? payload.locationId
-          : null,
-        p_current_delivery_id: payload.currentDeliveryId === undefined
-          ? robot.current_delivery_id
-          : optionalUuid(payload.currentDeliveryId, "currentDeliveryId"),
+        p_location_id: locationId,
+        p_current_delivery_id: optionalUuid(
+          payload.currentDeliveryId,
+          "currentDeliveryId",
+        ),
         p_lidar: payload.lidar,
         p_camera: payload.camera,
         p_esp32: payload.esp32,
@@ -284,13 +453,19 @@ Deno.serve(async (request) => {
           -20,
           150,
         ),
-        p_firmware_version: typeof payload.firmwareVersion === "string"
-          ? payload.firmwareVersion.slice(0, 80)
-          : null,
+        p_firmware_version: firmwareVersion,
       });
-      if (error) throw error;
+      if (error) {
+        if (error.code === "P0001") throw new HttpError(409, error.message);
+        throw error;
+      }
       stale = data === false;
     } else if (messageType === "events") {
+      assertPayloadKeys(
+        payload,
+        ["schemaVersion", "robotId", "eventId", "type", "severity", "at"],
+        ["deliveryId", "commandId", "payload"],
+      );
       const eventType = asString(payload.type, "type");
       const severity = asString(payload.severity, "severity");
       if (!allowedEventTypes.has(eventType)) {
@@ -303,11 +478,18 @@ Deno.serve(async (request) => {
         throw new HttpError(400, "Event payload must be a JSON object");
       }
 
+      const deliveryId = missionEventTypes.has(eventType)
+        ? asUuid(payload.deliveryId, "deliveryId")
+        : optionalUuid(payload.deliveryId, "deliveryId");
+      const commandId = missionEventTypes.has(eventType) || eventType === "RESUMED"
+        ? asUuid(payload.commandId, "commandId")
+        : optionalUuid(payload.commandId, "commandId");
+
       const { data, error } = await admin.rpc("apply_robot_event", {
         p_message_id: asUuid(payload.eventId, "eventId"),
         p_robot_id: robotId,
-        p_delivery_id: optionalUuid(payload.deliveryId, "deliveryId"),
-        p_command_id: optionalUuid(payload.commandId, "commandId"),
+        p_delivery_id: deliveryId,
+        p_command_id: commandId,
         p_event_type: eventType,
         p_severity: severity,
         p_payload: isObject(payload.payload) ? payload.payload : {},
@@ -321,34 +503,43 @@ Deno.serve(async (request) => {
       }
       duplicate = data === false;
     } else {
+      assertPayloadKeys(
+        payload,
+        ["schemaVersion", "robotId", "online", "at"],
+        ["firmwareVersion"],
+      );
       if (typeof payload.online !== "boolean") {
         throw new HttpError(400, "online must be a boolean");
+      }
+      asTimestamp(payload.at);
+      if (
+        payload.online &&
+        new Date(brokerObservedAt).getTime() < Date.now() - 60_000
+      ) {
+        throw new HttpError(400, "online presence is too old");
       }
 
       // Presence is bridge connectivity, not operational telemetry. The RPC
       // records it separately and fails the robot safe when telemetry expires.
       // p_observed_at is required so out-of-order or replayed presence
       // messages cannot move bridge_last_seen backwards.
-      const { error } = await admin.rpc("apply_robot_presence", {
+      const { data, error } = await admin.rpc("apply_robot_presence", {
         p_robot_id: robotId,
         p_online: payload.online,
-        p_firmware_version: typeof payload.firmwareVersion === "string"
-          ? payload.firmwareVersion.slice(0, 80)
-          : null,
-        p_observed_at: asTimestamp(payload.at),
+        p_firmware_version: optionalString(
+          payload.firmwareVersion,
+          "firmwareVersion",
+          80,
+        ),
+        // The broker action time remains fresh for Last Will messages even
+        // though their payload timestamp was fixed when the client connected.
+        p_observed_at: brokerObservedAt,
       });
-      if (error) throw error;
-    }
-
-    if (messageType !== "state" && messageType !== "presence") {
-      const { error } = await admin
-        .from("robots")
-        .update({
-          last_seen: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", robotId);
-      if (error) throw error;
+      if (error) {
+        if (error.code === "P0001") throw new HttpError(409, error.message);
+        throw error;
+      }
+      stale = data === false;
     }
 
     return json({
@@ -363,9 +554,6 @@ Deno.serve(async (request) => {
     if (error instanceof HttpError) {
       return json({ error: error.message }, error.status);
     }
-    return json(
-      { error: error instanceof Error ? error.message : "Ingestion failed" },
-      500,
-    );
+    return json({ error: "Ingestion failed" }, 500);
   }
 });
