@@ -133,11 +133,11 @@ Pi dependency: after this step, complete Step P1 in
 
 ### Step L4 — Back up and inspect the hosted database migration plan
 
-- [ ] Confirm the CLI is linked to the intended Supabase project without
+- [x] Confirm the CLI is linked to the intended Supabase project without
   printing credentials.
-- [ ] Create a recoverable hosted database backup or confirm the project's
+- [x] Create a recoverable hosted database backup or confirm the project's
   available point-in-time recovery before schema changes.
-- [ ] Run the active-command collision queries below. Every query must return
+- [x] Run the active-command collision queries below. Every query must return
   zero rows before the new unique indexes are applied.
 
 ```sql
@@ -178,6 +178,16 @@ npx supabase db push --linked --dry-run
 Pass evidence: the dry run contains only the migrations genuinely absent
 from the hosted project. Stop if it proposes an unexpected migration.
 
+Status 2026-07-22: complete from the EV folder.
+
+- Linked project confirmed as `nkvmpjznvkqmgcposaup` (`RavenPai's EV`)
+  without printing database passwords or service-role keys.
+- Hosted schema dump and public-data dump were written under `.local-backups/`,
+  which is Git-ignored.
+- All three active-command collision checks returned `0`.
+- `npx supabase db push --linked --dry-run` showed only
+  `202607210011_robot_ingestion_safety_followup.sql` pending.
+
 ### Step L5 — Apply migrations and deploy both Edge Functions
 
 In the Supabase dashboard, set or correct these function secrets without
@@ -203,6 +213,19 @@ Pass evidence:
 - Both Edge Functions show successful current deployments.
 - `mark-stale-robots-offline` and `expire-stale-robot-commands` are scheduled.
 - No function secret is present in frontend assets, Git, screenshots, or logs.
+
+Status 2026-07-22: complete.
+
+- Migration `202607210011_robot_ingestion_safety_followup.sql` was applied to
+  the hosted project.
+- Hosted migration history now includes `202607210010` and `202607210011`.
+- `dispatch-delivery` is deployed and active with JWT verification enabled.
+- `ingest-robot-message` is deployed and active with JWT verification disabled.
+- Supabase secret names exist for `EMQX_API_URL`, `EMQX_API_KEY`,
+  `EMQX_API_SECRET`, and `ROBOT_INGEST_SECRET`; only hashed secret fingerprints
+  were printed by the CLI.
+- `expire-stale-robot-commands` and `mark-stale-robots-offline` are scheduled
+  once per minute.
 
 ### Step L6 — Repair and verify EMQX command publication
 
@@ -231,6 +254,16 @@ Pass evidence:
 - The earlier HTTP `403` condition no longer occurs.
 - The isolated test identity remains tightly restricted through Steps P3–P5
   and L9, then is disabled or removed after L9 evidence collection.
+
+Status 2026-07-22: not complete from the EV folder.
+
+- The deployed function and required Supabase secret names are present, but the
+  live publish path still needs an authenticated staff dispatch test.
+- The EV folder does not contain staff test-account credentials, a service-role
+  key, or EMQX Deployment API credentials that can be safely used for the
+  isolated broker-result checks.
+- Do not use the robot MQTT username/password as the `EMQX_API_KEY` and
+  `EMQX_API_SECRET`; L6 requires Deployment API App ID/App Secret credentials.
 
 ### Step L7 — Repair and verify the EMQX-to-Supabase HTTP action
 
@@ -277,6 +310,15 @@ Close Step L7 at this configuration checkpoint, then complete L8 and Pi Steps
 P3–P5. Their live validation, presence, event, idempotency, and ordering evidence
 is evaluated with the isolated state/ACK regression in Step L9.
 
+Status 2026-07-22: not complete from the EV folder.
+
+- The hosted ingestion function is deployed and its shared-secret name exists.
+- The EV folder cannot verify or repair the EMQX Cloud HTTP Server connector,
+  rule action, retry settings, or action metrics without EMQX console/API
+  access.
+- The current hosted robot rows still show stale/offline bridge timestamps; no
+  fresh broker-to-Supabase presence was observed during this EV-folder pass.
+
 ### Step L8 — Enforce least-privilege EMQX authorization
 
 For each robot identity:
@@ -294,6 +336,13 @@ Pass evidence:
 - Cross-robot topics, command wildcards, open wildcards, and robot-to-command
   publication fail.
 - MQTT device credentials and Deployment API credentials are different.
+
+Status 2026-07-22: not complete from the EV folder.
+
+- Authorization rules must be changed and tested in EMQX Cloud.
+- The EV folder has no safe non-interactive access to the broker authorization
+  configuration. Do not paste MQTT passwords into shell commands or commit them
+  into a local env file.
 
 ### Step L9 — Run isolated cloud regression and truthful Pi checks
 
@@ -358,6 +407,15 @@ Pass evidence:
   P3 rejection evidence, and actual events without fabricated sensor health.
 - The temporary identity and credentials are disabled or removed after the
   final evidence is retained.
+
+Status 2026-07-22: not complete.
+
+- L9 depends on L6, L7, L8, and Pi Steps P3-P5.
+- The hosted database and Edge Functions are ready for this test, but the EV
+  folder lacks the authenticated normal-user/staff test credentials and the
+  temporary EMQX isolated test identity needed to run the full workflow.
+- Physical Pi truth checks must use real retained broker/Supabase evidence and
+  must not fabricate online, idle, sensor, ACK, or mission-state data.
 
 ### Step L10 — Redeploy and smoke-test the Cloudflare frontend
 

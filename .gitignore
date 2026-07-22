@@ -36,6 +36,7 @@ robot-pi/ack-archive/
 .dev.vars.*
 .DS_Store
 *.log
+.local-backups/
 .pytest_cache/
 .coverage
 .coverage.*
