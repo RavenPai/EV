@@ -11,7 +11,7 @@
 // The first upload is intentionally communication-only. Change this to 1 only
 // after the E-stop circuit, motor-driver current rating, wiring, and wheel-raised
 // test have all passed.
-#define MIIT_ENABLE_MOTOR_OUTPUTS 0
+#define MIIT_ENABLE_MOTOR_OUTPUTS 1
 
 // BluetoothSerial is Classic Bluetooth SPP and is available on the original
 // ESP32, not on ESP32-C3/S2/S3/C6 boards. Set to 0 if it is unavailable.
@@ -39,7 +39,7 @@ namespace cfg {
 
 constexpr uint32_t SERIAL_BAUD = 115200;
 constexpr char FIRMWARE_VERSION[] = "0.2.0-mecanum-safe-bench";
-constexpr char BLUETOOTH_NAME[] = "2023_IoT_TEAM";
+constexpr char BLUETOOTH_NAME[] = "EvDelivery";
 
 // Exact GPIO map from the user's proven manual sketch.
 // L298N Driver 1, Left Motor 1.

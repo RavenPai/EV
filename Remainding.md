@@ -255,15 +255,42 @@ Pass evidence:
 - The isolated test identity remains tightly restricted through Steps P3–P5
   and L9, then is disabled or removed after L9 evidence collection.
 
-Status 2026-07-22: not complete from the EV folder.
+Status 2026-07-23: partially complete from the EV folder.
 
-- The deployed function and required Supabase secret names are present, but the
-  live publish path still needs an authenticated staff dispatch test.
-- The EV folder does not contain staff test-account credentials, a service-role
-  key, or EMQX Deployment API credentials that can be safely used for the
-  isolated broker-result checks.
-- Do not use the robot MQTT username/password as the `EMQX_API_KEY` and
-  `EMQX_API_SECRET`; L6 requires Deployment API App ID/App Secret credentials.
+- A Deployment API credential (App ID/App Secret, not the robot's MQTT login)
+  is configured in `EMQX_API_KEY`/`EMQX_API_SECRET`/`EMQX_API_URL`. A direct
+  read-only `GET /api/v5/clients/robot-01-pi` call succeeded, confirming the
+  base URL resolves to this deployment's API and the credential authenticates.
+- Least-privilege is not yet confirmed: the same credential could read live
+  client/subscription data (an admin/monitoring-scope capability), not only
+  publish. Verify in the EMQX Cloud console whether a narrower-scoped key is
+  available, or accept and document the current scope as a conscious
+  trade-off.
+- Physical Pi subscriber confirmed independently of any dispatch test:
+  `robot-01-pi` is `connected:true` (connected 2026-07-23T15:15:17Z) with
+  exactly one subscription, `miit/robots/robot-01/commands` at QoS 1 — no
+  unexpected topics.
+- Two real `START_MISSION` publish attempts against the physical `robot-01`
+  from 2026-07-21 both show `published_at` populated (broker accepted the
+  publish) and later `EXPIRED` ("Command TTL elapsed before robot
+  acknowledgement"). This is consistent with the publish path working and the
+  Step L7 return path (EMQX-to-Supabase webhook for `acks`/`state`/`events`/
+  `presence`) still being broken, not a Step L6 failure. No motion resulted:
+  `robot-pi/mission_manager.py` (Step L15) does not exist yet to act on a
+  received command.
+- An isolated non-physical test robot, `robot-test-l6`, now exists in
+  `public.robots` (status `ONLINE`, clearly named, no physical hardware) for
+  exhaustive publish-result testing without touching `robot-01`.
+- The matching isolated test delivery could not be created from the EV folder:
+  `deliveries` has a `before insert` trigger
+  (`set_authenticated_delivery_requester`) that raises unless `auth.uid()` is a
+  real authenticated session — there is no service-role bypass, by design. A
+  logged-in user must create the delivery, then staff must approve/assign it to
+  `robot-test-l6` and dispatch, before the publish-result matrix (200 delivered,
+  202 no-subscriber, timeout/5xx) can be exercised end-to-end and this step
+  closed.
+- `robot-test-l6` should be deleted after L6/L9 evidence collection, per the
+  temporary-identity cleanup rule.
 
 ### Step L7 — Repair and verify the EMQX-to-Supabase HTTP action
 
