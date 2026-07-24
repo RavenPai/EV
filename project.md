@@ -1539,6 +1539,8 @@ EV/
 | `robot-pi/test_message_contract.py` | Hardware-free tests for robot identity, telemetry freshness, and event schema rules |
 | `robot-pi/l6_simulator.py` | Guarded, bounded, non-physical `robot-test-l6` presence/state/ACK simulator |
 | `robot-pi/test_l6_simulator.py` | Hardware-free safety and message-contract tests for the L6 simulator |
+| `robot-pi/l7_event_probe.py` | One-shot, non-mission `robot-test-l6` event probe for the hosted HTTP action |
+| `robot-pi/test_l7_event_probe.py` | Hardware-free identity and no-delivery-side-effect tests for the L7 probe |
 | `robot-pi/robot.env.example` | Secret-free production environment template |
 | `MIIT_Rover_Raspberry_Pi_Ubuntu_Setup_Guide.md` | Preserved historical guide used only as a phase/step reference; its old agent and ROS commands require current validation |
 | `robot-pi/miit-rover-agent.service` | Hardened systemd unit with network/time ordering and automatic restart |
@@ -1970,13 +1972,11 @@ The repository is honest about the boundary between an MVP and a production auto
 
 Suggested order:
 
-1. Delete the retired EMQX Deployment API credential after preserving
-   replacement-key evidence, then remove temporary L6 resources after the final
-   event regression.
-2. Finish the existing EMQX HTTP action release checks: confirm its protected
-   path/header/body, enable TLS verification, configure retries and metrics, and
-   prove the event branch. Presence, state, and ACK already have isolated live
-   evidence.
+1. Rotate the active EMQX Deployment API credential that was shared during
+   setup, then finish L9 and remove temporary L6 resources after retaining
+   redacted evidence.
+2. Preserve the completed L7 verified connector, protected action contract,
+   ordered buffering/retries, and metrics baseline.
 3. Preserve the verified L8 least-privilege authorization and rerun its safe
    negative regression after any future EMQX authorization change.
 4. Implement server-enforced delivery/command rate limiting and abuse protection.
@@ -2286,16 +2286,43 @@ dispatch, but not a physical delivery test:
   password as a substitute or store the replacement credential outside
   Supabase server-side secrets.
 
-The EMQX-to-Supabase pipeline has one connected HTTP connector, one enabled
-four-topic rule, and one available HTTP action. A previous Pi presence
-heartbeat updated `bridge_online` and `bridge_last_seen`, proving useful return
-path functionality. It is not a production closeout yet: confirm the action
-uses `POST /functions/v1/ingest-robot-message` with the complete envelope and
-matching protected header, enable TLS certificate verification with an
-appropriate CA/trust chain, and inspect retry/backoff and response metrics.
-Presence, state, and ACK now have controlled live evidence; the event branch
-still requires a controlled non-physical test. No new connector or ingestion
-secret is needed merely because the former disconnected connector was deleted.
+The EMQX-to-Supabase pipeline now has one connected TLS-verified HTTP connector,
+one enabled four-topic rule, and one available HTTP action. Presence, state,
+ACK, and a controlled non-mission event have live evidence. The endpoint's
+strict validation confirms the effective POST path, complete body, and matching
+protected header. The ingestion secret was rotated after exposure during
+review. Ordered buffering/retries and stable post-maintenance metrics were
+verified, and the unused unverified connector was deleted.
+
+The action was then set to 2 retries, one buffer worker, a 45-second request
+TTL, a 30-second health check, a 4 MB queue, asynchronous mode, and an inflight
+window of 1. The single inflight request preserves per-robot ordering while the
+buffer absorbs brief downstream interruptions. A fresh controlled event reached
+Supabase after the change; refreshed action counters remain the final metrics
+evidence.
+
+The action failure counter increased from 8 to 23 during the secret
+rotation/configuration window, with zero discarded messages. After the change,
+both a uniquely identified test event and a fresh physical bridge presence
+reached Supabase. A later statistics refresh showed success increase from
+1,500 to 1,508 while failure held at 23 and discarded held at zero, closing the
+increase as maintenance-window evidence.
+
+A replacement HTTP connector then passed its connectivity test with TLS peer
+verification enabled, the Supabase SNI, and the two relevant public roots
+selected from Google's maintained bundle. The action was switched to that
+connector, and another uniquely identified test event reached Supabase. Delete
+the old unverified connector only after its rule count is confirmed as zero.
+
+The old unverified connector was then deleted. A fresh physical bridge
+heartbeat reached Supabase within 15 seconds afterward, confirming that the
+verified connector, rule, and action remained active. This closes L7.
+
+Earlier in the L7 verification, the ingestion secret exposed during the
+console review was rotated in both Supabase and the EMQX action. A new,
+uniquely identified
+non-physical event reached `robot_events` after rotation, proving that the two
+replacement values match without reading or recording the secret.
 
 The isolated authenticated delivery transaction now has live evidence for
 HTTP 200/delivered and ACK ingestion, while the earlier stopped-subscriber
@@ -2335,9 +2362,9 @@ credential or private infrastructure value is recorded here.
 That deployment does **not** verify a complete robot. A later cloud follow-up
 repaired the HTTP 403, validated a replacement Deployment API credential with
 an isolated non-physical 200/202 broker test, and observed presence, state, and
-ACK through the EMQX-to-Supabase path. Its transport security, action
-retry/metrics configuration, and event coverage still require the L7 checks.
-The five specific
+ACK and a controlled event through the EMQX-to-Supabase path. L7 subsequently
+verified TLS peer validation, ordered retries/buffering, stable metrics, secret
+rotation, and post-cleanup ingestion. The five specific
 `robot-01-pi` MQTT permissions are correctly scoped. The corrected L8
 regression also denied the temporary L6 identity a physical cross-robot command
 subscription, wildcard command subscription, and unowned command publication.

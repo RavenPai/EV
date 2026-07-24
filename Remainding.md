@@ -29,11 +29,12 @@ device identifiers into this file, Git, screenshots, SQL results, or logs.
 - L4-L5 are complete against the hosted stack: migrations `010`/`011` are
   applied and both Edge Functions are active. L6 has authenticated
   delivered/acknowledged and no-subscriber evidence; only credential and
-  temporary-test cleanup remains. L7 has live presence/state/ACK evidence but
-  still needs certificate verification, action retry/metrics checks, and an
-  event test. L8 passes its safe allow/deny regression. L9 is partially
-  complete through dispatch and ACK; event-driven lifecycle and invalid/replay
-  cases remain. L10-L21 remain not started.
+  temporary-test cleanup remains. L7 is complete: its verified connector,
+  POST path/body/header, ordered retry/buffer settings, metrics, and all four
+  message branches have live evidence. L8 passes its safe allow/deny
+  regression. L9 is partially complete
+  through dispatch, ACK, state, and one non-mission event; event-driven delivery
+  progression and invalid/replay cases remain. L10-L21 remain not started.
   See each step below for exact evidence and gaps.
 - The ESP32 firmware source (`MIIT_Rover_ESP32_Firmware_v0.2.0/`) now exists
   in the repository, and `MIIT_ENABLE_MOTOR_OUTPUTS` was set to `1` on
@@ -247,7 +248,7 @@ Status 2026-07-24: the isolated application path is functionally complete. A
 replacement Deployment API credential is active in Supabase; live non-physical
 tests covered delivered/acknowledged and no-subscriber outcomes, while local
 tests cover ambiguous timeout/5xx classification and database reconciliation.
-The remaining L6 work is credential and temporary-test cleanup.
+The remaining L6 work is replacement-key rotation and temporary-test cleanup.
 
 - [x] Verify that a Deployment API App ID/App Secret (not a robot MQTT login)
   authenticates to the Broker Deployment API.
@@ -261,9 +262,13 @@ The remaining L6 work is credential and temporary-test cleanup.
 - [x] Create a replacement EMQX Serverless Deployment API App ID/App Secret,
   update `EMQX_API_KEY` and `EMQX_API_SECRET` in Supabase, and verify it with
   safe non-robot Broker API probes.
-- [ ] In the EMQX Cloud console, delete the retired Deployment API credential
+- [x] In the EMQX Cloud console, delete the retired Deployment API credential
   after retaining the replacement-key evidence. Do not change
   `ROBOT_INGEST_SECRET` for this rotation.
+- [ ] Before production, rotate the currently active Deployment API credential
+  once more because its value was shared during setup. Update the two Supabase
+  server-side secrets, verify a safe publish, and then delete the superseded
+  credential without recording either value.
 - [x] Record the Serverless limitation: Deployment API keys have full access
   and cannot be permission-scoped. Mitigate it with server-only Supabase
   secrets, rotation, no logs/screenshots, and a move to a plan with scoped
@@ -378,27 +383,65 @@ Pass evidence for this configuration checkpoint:
 - A controlled configuration test has no connector, TLS, template, or action
   error.
 
-Status 2026-07-24: functional presence, state, and ACK evidence exists, but the
-secure release gate is not complete.
+Status 2026-07-24: complete. The secure connector, rule, action, retry/order
+settings, metrics, rotated ingestion secret, and all four message branches have
+live hosted evidence.
 
 - [x] One connected HTTP Server connector, one enabled rule covering the four
   required topics, and one available HTTP action exist. The former disconnected
   connector was deleted, so do not create a duplicate pipeline.
+- [x] Verify the live rule SQL selects `bin2hexstr(id)` as `mqttMessageId` plus
+  `topic`, `payload`, `clientid`, `username`, `qos`, and `timestamp` from all
+  four required topics.
 - [x] Preserve the existing `ROBOT_INGEST_SECRET`; deleting a connector does
   not require a new ingestion secret.
+- [x] Rotate `ROBOT_INGEST_SECRET` because its prior value was exposed during
+  the L7 console review. Generate the replacement locally, update Supabase and
+  the action header in one short maintenance window, never record its value,
+  and clear it from the clipboard after saving. A fresh controlled event passed
+  through EMQX and appeared in Supabase after rotation, proving both sides use
+  the replacement.
 - [x] A live Pi presence heartbeat previously updated `bridge_online` and
   `bridge_last_seen`, proving the return path can reach Supabase.
-- [ ] In the action, verify `POST`, the
-  `/functions/v1/ingest-robot-message` path, complete envelope body, and the
-  protected `x-emqx-secret` header without recording its value.
-- [ ] Enable TLS certificate verification with a valid CA/trust chain. A
-  connected HTTPS connector with verification disabled is useful functional
-  evidence, not production-ready transport security.
-- [ ] Configure and inspect non-2xx retry/backoff and action metrics.
+  After the old connector was deleted, another physical bridge heartbeat
+  reached Supabase within 15 seconds, confirming the verified connector
+  remained active.
+- [x] Verify the action's `POST`
+  `/functions/v1/ingest-robot-message` path, complete envelope body, and
+  protected `x-emqx-secret` header without recording its value. The strict
+  endpoint accepted presence, state, ACK, and event messages; those paths would
+  reject a wrong method, route, header, or missing envelope field.
+- [x] Enable TLS certificate verification with a valid CA/trust chain. A new
+  connector was tested successfully with peer verification, the Supabase SNI,
+  and a two-root CA bundle selected from Google's maintained trust bundle. The
+  existing action was switched to it, and a uniquely identified controlled
+  event reached Supabase afterward.
+- [x] After confirming it has zero associated rules, delete only the old
+  unverified connector. Keep the verified connector, rule, and action.
+- [x] Configure and inspect non-2xx retry/backoff and action metrics.
+  The 24 July screenshot records 1,455 rule matches/passes with zero rule
+  failures or no-result outcomes. The action records 1,447 successes, 8
+  historical failures, and zero discarded messages. Attribute the historical
+  failures, verify no backlog, and prove the failure counter does not increase
+  during the final controlled test.
+  The action is now configured with 2 retries, one buffer worker, a 45-second
+  request TTL, a 30-second health check, a 4 MB buffer, asynchronous mode, and
+  an inflight window of 1 to preserve robot message ordering. A fresh event
+  reached Supabase after these changes; retain the refreshed action counters to
+  close the metric check.
+  During the secret-rotation/configuration window, the action failure counter
+  rose from 8 to 23 while success rose to 1,500; discarded remained zero. A
+  post-change controlled event and a fresh physical bridge presence both
+  reached Supabase. A later refresh showed success increase to 1,508 while
+  failure remained at 23 and discarded remained zero, closing the increase as
+  maintenance-window evidence.
 - [x] Send controlled presence, state, and ACK messages through the real rule
   and verify their database effects with the isolated test robot.
-- [ ] Send a controlled event through the real rule and verify its database
-  effect. Do not use a physical mission event for this configuration check.
+- [x] Send a controlled event through the real rule and verify its database
+  effect. A QoS-1, non-retained `OBSTACLE_DETECTED` probe for `robot-test-l6`
+  inserted one matching `robot_events` row with no delivery/command linkage and
+  generated two database-backed staff notifications. No physical robot or
+  mission event was used.
 
 Presence alone does not advance `last_seen`, `telemetry_received_at`, or
 `telemetry_at`; the isolated state regression verified that a valid state
@@ -443,10 +486,9 @@ Status 2026-07-24: complete for the current client authorization regression.
 
 ### Step L9 — Run isolated cloud regression and truthful Pi checks
 
-Finish the unchecked L7 configuration/event work and retain the applicable Pi
-Steps P3–P5 evidence. Keep motor power disconnected. Step P10 is reserved for
-the later real mission-manager path and is not required for the isolated cloud
-regression.
+L7 and L8 are complete. Retain the applicable Pi Steps P3–P5 evidence and keep
+motor power disconnected. Step P10 is reserved for the later real
+mission-manager path and is not required for the isolated cloud regression.
 
 Part A — isolated non-physical test robot:
 
@@ -513,6 +555,9 @@ Status 2026-07-24: partially complete.
 - [x] The real broker/action path ingested controlled presence, state, and ACK.
   The delivery reached `DISPATCHED`, and its matching command reached
   `ACKNOWLEDGED`.
+- [x] A separate controlled non-mission event passed through the real action,
+  inserted exactly one matching test-robot event, and generated the expected
+  database-backed notifications. It did not advance a delivery.
 - [x] The same isolated path recorded both HTTP 200 with a subscriber and HTTP
   202 after the subscriber stopped. Timeout/5xx behavior is covered locally.
 - [ ] Send a controlled linked event through the real action and prove

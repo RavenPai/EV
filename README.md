@@ -201,7 +201,7 @@ the local integration suite on every pull request and push to `main`.
 Current audit status: the completed 21 July local gate included the Docker-backed
 pgTAP/Edge Function suite, and migrations `010`/`011` plus both Edge Functions
 are now deployed. The current fast gate also passes locally without production
-credentials (15 frontend tests, 30 Pi tests, 4 ESP32 protocol tests, TypeScript,
+credentials (15 frontend tests, 33 Pi tests, 4 ESP32 protocol tests, TypeScript,
 Vite build, and the EMQX publish-response test). The local webhook-contract test
 requires Docker Desktop's Linux engine to be running; its current unavailability
 is an environment prerequisite, not a source failure. The isolated broker
@@ -337,11 +337,11 @@ action. A real authenticated dispatch became `DISPATCHED`, and its command
 became `ACKNOWLEDGED` after the simulated ACK. None of these tests used the
 physical robot.
 
-This is not a production acceptance result yet. The EMQX action must use the
-ingestion-function path and protected header, verify the HTTPS certificate,
-and be checked for retry/backoff and failure metrics. Presence, state, and ACK
-have live isolated evidence; the event branch and event-driven delivery
-progression remain to be proven. The corrected client and All Users
+This is not a production acceptance result yet. The EMQX return path now has a
+verified HTTPS connector, the protected ingestion action, ordered buffering and
+retries, stable metrics, and live presence/state/ACK/event evidence.
+Event-driven delivery progression and the remaining isolated invalid/replay
+matrix still need L9 evidence. The corrected client and All Users
 authorization rules pass the safe regression: the test client's own
 subscription succeeds, while physical cross-robot and wildcard command
 subscriptions and an unowned command publication are denied. See
@@ -372,6 +372,26 @@ L6_MQTT_PASSWORD=...
 python robot-pi/l6_simulator.py --duration 900
 ```
 
+For the L7 event-branch check, `robot-pi/l7_event_probe.py` is a one-shot probe
+hard-locked to the same non-physical robot. It publishes exactly one
+non-retained `OBSTACLE_DETECTED` event without a delivery or command link, so it
+cannot advance a delivery or control hardware:
+
+```bash
+L7_MQTT_HOST=...
+L7_MQTT_USERNAME=...
+L7_MQTT_PASSWORD=...
+python robot-pi/l7_event_probe.py
+```
+
+On 24 July 2026, the real EMQX rule/action ingested this controlled event into
+`robot_events` and generated the expected database-backed staff notifications.
+The successful strict ingestion response confirms the effective POST path,
+protected header, and complete envelope template. A TLS-verified replacement
+connector, ordered asynchronous action settings, and stable post-maintenance
+metrics were then tested successfully. The unused unverified connector was
+deleted.
+
 ## Cloudflare Workers frontend deployment
 
 The checked-in `wrangler.jsonc` deploys the static Vite output as Cloudflare
@@ -397,13 +417,13 @@ The remaining work is split by execution location:
 - [RemaindingRaspberryPi.md](RemaindingRaspberryPi.md) — Pi deployment,
   ESP32 commissioning, navigation, physical safety, and supervised testing.
 
-The immediate cloud-release gates are the remaining L6-L10 items in
-`Remainding.md`: delete the retired Deployment API credential and temporary
-test resources after retaining redacted evidence, finish the existing HTTP
-action's TLS/retry/metrics configuration, test the event branch and event-driven
-delivery progression, and deploy/smoke-test the updated frontend. L8
-default-deny authorization is already verified and must be preserved. After
-those gates, the next application safeguards are:
+The immediate cloud-release gates are the remaining L6, L9, and L10 items in
+`Remainding.md`: rotate the active Deployment API credential that was shared
+during setup, finish the isolated event-driven/invalid-case matrix, delete
+temporary test resources after retaining redacted evidence, and
+deploy/smoke-test the updated frontend. L7 ingestion and L8 default-deny
+authorization are complete and must be preserved. After those gates, the next
+application safeguards are:
 
 1. Add server-enforced rate limiting and abuse protection to authenticated
    delivery creation and command calls.
