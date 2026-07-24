@@ -1505,6 +1505,7 @@ EV/
 | `demo.ts` | Seed data, campus locations, and formatting helpers |
 | `supabase.ts` | Supabase client creation and mode selection |
 | `id.ts` | Cross-browser identifier generation |
+| `function-error.ts` | Extracts safe JSON error details returned by Supabase Edge Functions |
 | `types.ts` | Shared TypeScript domain types |
 
 ### Backend and robot
@@ -1536,6 +1537,8 @@ EV/
 | `robot-pi/test_agent.py` | Hardware-free tests for command processing, durable ACK ordering, replay handling, and STOP/ESTOP behavior |
 | `robot-pi/test_local_store.py` | Tests one-file-per-command handoff and interrupted-write recovery |
 | `robot-pi/test_message_contract.py` | Hardware-free tests for robot identity, telemetry freshness, and event schema rules |
+| `robot-pi/l6_simulator.py` | Guarded, bounded, non-physical `robot-test-l6` presence/state/ACK simulator |
+| `robot-pi/test_l6_simulator.py` | Hardware-free safety and message-contract tests for the L6 simulator |
 | `robot-pi/robot.env.example` | Secret-free production environment template |
 | `MIIT_Rover_Raspberry_Pi_Ubuntu_Setup_Guide.md` | Preserved historical guide used only as a phase/step reference; its old agent and ROS commands require current validation |
 | `robot-pi/miit-rover-agent.service` | Hardened systemd unit with network/time ordering and automatic restart |
@@ -1967,23 +1970,28 @@ The repository is honest about the boundary between an MVP and a production auto
 
 Suggested order:
 
-1. Run the Docker-backed integration suite for migration `011`, then deploy the
-   pending migrations and both changed Edge Functions only after it passes.
-2. Repair and positively test the existing EMQX HTTP action and Deployment API
-   credentials, including retries, response metrics, and least-privilege ACLs.
-3. Implement server-enforced delivery/command rate limiting and abuse protection.
-4. Add automated operational alerts for failed or backlogged EMQX HTTP actions.
-5. Reconcile the already deployed Pi bridge with the pushed commit and verify
+1. Delete the retired EMQX Deployment API credential after preserving
+   replacement-key evidence, then remove temporary L6 resources after the final
+   event regression.
+2. Finish the existing EMQX HTTP action release checks: confirm its protected
+   path/header/body, enable TLS verification, configure retries and metrics, and
+   prove the event branch. Presence, state, and ACK already have isolated live
+   evidence.
+3. Preserve the verified L8 least-privilege authorization and rerun its safe
+   negative regression after any future EMQX authorization change.
+4. Implement server-enforced delivery/command rate limiting and abuse protection.
+5. Add automated operational alerts for failed or backlogged EMQX HTTP actions.
+6. Reconcile the already deployed Pi bridge with the pushed commit and verify
    an active one-owner ESP32 serial session.
-6. Implement the Pi mission manager that consumes requests, produces state and
+7. Implement the Pi mission manager that consumes requests, produces state and
    linked events, and provides the verified `RESUMED` event path.
-7. Select one serial-port owner, compile/flash the commissioning ESP32 source,
+8. Select one serial-port owner, compile/flash the commissioning ESP32 source,
    and verify heartbeat, STOP, latching ESTOP, local reset, and the physical
    E-stop with motor power disconnected before raised-wheel testing.
-8. Make initial robot assignment transactional and reject already-reserved robots.
-9. Design the cargo-lock and one-time-code lifecycle.
-10. Perform the live broker and supervised hardware-in-the-loop smoke suites.
-11. Complete a hazard analysis before any unsupervised campus trial.
+9. Make initial robot assignment transactional and reject already-reserved robots.
+10. Design the cargo-lock and one-time-code lifecycle.
+11. Perform the live broker and supervised hardware-in-the-loop smoke suites.
+12. Complete a hazard analysis before any unsupervised campus trial.
 
 ## 26. Security and privacy checklist
 
@@ -1997,7 +2005,8 @@ Before public operation:
 - Publish a privacy notice.
 - Define retention and deletion rules for phone numbers and delivery history.
 - Verify all staff roles manually.
-- Rotate EMQX credentials after testing.
+- Delete or revoke the retired EMQX Deployment API credential after the
+  replacement credential has been safely verified.
 - Use per-robot MQTT identities.
 - Verify RLS using USER, ADMIN, and OPERATOR test accounts.
 - Confirm service-role and EMQX credentials never enter the browser bundle.
@@ -2112,12 +2121,16 @@ Its external call may have succeeded, so it remains a command/reservation
 barrier until identical robot ACK/event evidence reconciles it or staff confirms
 through the explicit reconciliation path that it was not published.
 
-### 28.5 Deployment and verification status
+### 28.5 Historical deployment audit (21 July 2026)
 
-As of the 21 July 2026 audit, deployment checklist steps 1 through 8 had been
-completed, from deploying the frontend through verifying the then-current
-database. This is dated evidence, not a claim that the new local migrations or
-functions are deployed.
+The following section is an incident record of the 21 July audit. It explains
+the original HTTP 403 and missing return-path evidence, but is superseded for
+current go/no-go decisions by Section 28.7.
+
+As of that audit, deployment checklist steps 1 through 8 had been completed,
+from deploying the frontend through verifying the then-current database. This
+was dated evidence, not a claim that the new local migrations or functions were
+deployed.
 
 Step 9, **Test the web workflow**, is blocked at dispatch. Clicking **Dispatch mission** creates the `START_MISSION` audit command, but the delivery does not change from `ASSIGNED` to `DISPATCHED`.
 
@@ -2167,7 +2180,7 @@ EMQX call and atomically finalizes publication/dispatch. That behavior is not in
 the stale deployed function and has not yet been verified by Docker-backed
 pgTAP or a live broker smoke test.
 
-To unblock step 9:
+Historical remediation plan for step 9:
 
 1. In the target EMQX deployment, create or verify a **Deployment API Key**.
 2. Use its **App ID** and **App Secret**, not an MQTT client username/password or a platform-level API key.
@@ -2189,12 +2202,129 @@ To unblock step 9:
    `acks`, `state`, `events`, and `presence`, then default deny unmatched
    operations. Repeat both positive and forbidden-topic tests.
 
+### 28.6 Historical cloud follow-up (23 July 2026)
+
+This records the functional observations made on 23 July. In this historical
+section, “resolved” means the route worked in that observation; it does not
+mean that all security or release criteria are closed. Section 28.7 is the
+current source for the next actions.
+
+Item 1-5 above are resolved. A then-current EMQX Deployment API Key (App ID/App
+Secret, distinct from any robot's MQTT login) is set in `EMQX_API_URL`,
+`EMQX_API_KEY`, and `EMQX_API_SECRET`. Evidence:
+
+- A direct authenticated `POST {EMQX_API_URL}/api/v5/publish` call returned
+  `202 no_matching_subscribers` (not `403`), confirming the credential and
+  base URL both resolve correctly.
+- Two real `START_MISSION` dispatches against the physical `robot-01` on
+  21 July 2026 both show `published_at` populated (broker accepted the
+  publish), then later `EXPIRED` — "Command TTL elapsed before robot
+  acknowledgement." This is expected given items 6 and 7 below are still
+  open: the robot's own ACK never reaches Supabase, and
+  `robot-pi/mission_manager.py` does not exist yet to act on a received
+  command, so no physical motion resulted.
+- A read-only `GET {EMQX_API_URL}/api/v5/clients/robot-01-pi` call confirms
+  the physical Pi bridge is connected with exactly one subscription,
+  `miit/robots/robot-01/commands` at QoS 1 — the command channel itself is
+  healthy independent of any dispatch test.
+
+The 23 July presence route had functional evidence only. The original EMQX
+HTTP Server connector had certificate verification enabled with no CA
+configured (`{verify,verify_peer},{cacerts,undefined}`) and never connected.
+A replacement connector with TLS verification off, the same four-topic rule,
+and an HTTP action targeting `ingest-robot-message` forwarded a Pi presence
+heartbeat: `robot-01`'s `bridge_online` flipped to `true` and
+`bridge_last_seen` advanced to within seconds of query time. This did not prove
+the action path/header, certificate verification, ACK, state, or event branch.
+Presence also does not make `last_seen` fresh; that requires a valid state
+snapshot from the future mission manager (Step L15).
+
+Item 7 remains open: authorization is still not least-privilege, and the
+Deployment API credential itself can read live client/subscription data,
+broader than a publish-only scope would allow.
+
+An isolated, clearly-labeled non-physical test robot, `robot-test-l6`, was
+added to `public.robots` to continue exhaustive publish-result testing
+(200/delivered, 202/no-subscriber, timeout/5xx) without risking the physical
+robot. At that point its matching test delivery could not be created outside
+the running application because `deliveries` requires a genuine `auth.uid()`.
+A later authenticated application test successfully created and dispatched
+that delivery. `robot-test-l6` must be deleted after the remaining event
+evidence is retained.
+
+### 28.7 Current hosted verification status (23–24 July 2026)
+
+The verified Deployment API probe no longer returns HTTP 403. The hosted database
+is up to date, migrations `010` and `011` are applied, and both Edge Functions
+are active. The expected custom secret names exist in Supabase:
+`EMQX_API_URL`, `EMQX_API_KEY`, `EMQX_API_SECRET`, and
+`ROBOT_INGEST_SECRET`. The CLI exposes only their fingerprints, never their
+values. The local public Supabase browser key also authenticates successfully;
+anonymous reads of `robots` correctly receive 401 because that table is
+restricted to authenticated users.
+
+EMQX Deployment API verification now includes a full isolated application
+dispatch, but not a physical delivery test:
+
+- A replacement Deployment API credential is active in Supabase. An
+  authenticated clients probe returned HTTP 200. A safe non-physical publish
+  returned HTTP 200 while an isolated test subscriber was connected, then
+  HTTP 202 `no_matching_subscribers` after it was stopped. This proves the
+  current credential and endpoint can reach the broker; HTTP 202 intentionally
+  does not dispatch a delivery. No test message used the physical robot.
+- A guarded simulator supplied fresh `robot-test-l6` presence/state through the
+  real EMQX action. An authenticated user/staff workflow created, approved,
+  assigned, and dispatched an isolated delivery. The delivery became
+  `DISPATCHED`; the matching command became `ACKNOWLEDGED` after the simulator's
+  ACK. The simulator was then stopped.
+- Historical Pi subscription evidence showed only the expected command topic.
+  It must be rechecked immediately before a test; it is not a current online or
+  movement-ready claim.
+- The replacement key was validated safely. Delete the retired Deployment API
+  key in the EMQX Cloud console after retaining that evidence. Serverless keys
+  are full-access and cannot be permission-scoped; do not use a robot MQTT
+  password as a substitute or store the replacement credential outside
+  Supabase server-side secrets.
+
+The EMQX-to-Supabase pipeline has one connected HTTP connector, one enabled
+four-topic rule, and one available HTTP action. A previous Pi presence
+heartbeat updated `bridge_online` and `bridge_last_seen`, proving useful return
+path functionality. It is not a production closeout yet: confirm the action
+uses `POST /functions/v1/ingest-robot-message` with the complete envelope and
+matching protected header, enable TLS certificate verification with an
+appropriate CA/trust chain, and inspect retry/backoff and response metrics.
+Presence, state, and ACK now have controlled live evidence; the event branch
+still requires a controlled non-physical test. No new connector or ingestion
+secret is needed merely because the former disconnected connector was deleted.
+
+The isolated authenticated delivery transaction now has live evidence for
+HTTP 200/delivered and ACK ingestion, while the earlier stopped-subscriber
+probe records HTTP 202/no-subscriber. Timeout/5xx classification is covered by
+automated tests. A controlled event, invalid/replay cases, and cleanup remain.
+Delete the temporary robot, credentials, and deliveries after retaining
+redacted evidence.
+
+The corrected safe authorization regression now passes. The temporary client's
+own test command subscription was granted; a physical `robot-01` command
+subscription and a command wildcard subscription returned `Not authorized`;
+and an MQTT v5 publish to an unowned dummy command topic returned `Not
+authorized`. No physical command was published or received. Keep the final
+**All Users** `#` / Publish & Subscribe / Deny fallback and the exact
+per-Client-ID rules; repeat this regression after any authorization change.
+
+Day-to-day deployment status, ordered remaining steps, and dated pass
+evidence are now tracked in `Remainding.md` (laptop/cloud work),
+`RemaindingRaspberryPi.md` (Pi installation and hardware gates), and
+`DoneRaspberrypi.md` (completed Pi work). Treat those files as authoritative
+for current status; this section is a narrative summary and will not
+necessarily be updated at the same cadence.
+
 ## 29. Raspberry Pi deployment status and work remaining
 
 The updated `robot-pi/agent.py` is a transport and handoff process. An initial
 read-only audit on 21 July 2026 found the old repository bridge. A subsequent
 authorized deployment installed and restarted `pi-agent-1.3.0`, verified all
-27 tests on the Pi, confirmed the MQTT/TLS command subscription, observed zero
+30 tests on the current source, confirmed the MQTT/TLS command subscription, observed zero
 service restarts, enabled the clock-wait service, and hardened configuration
 ownership. The device was absent at bridge startup; a later read-only check
 found the persistent USB serial link and permissions present, but no successful
@@ -2202,18 +2332,23 @@ post-start ESP32 handshake was recorded. The active one-owner serial session
 must therefore be re-verified before relying on that transport. No secret
 credential or private infrastructure value is recorded here.
 
-That deployment does **not** verify a complete robot. The updated agent
-successfully archived one broker-accepted disconnect safety event, but the
-EMQX-to-Supabase HTTP action was not reverified; recent web commands had also
-failed at the EMQX Deployment API with HTTP 403, and the robot MQTT account was
-able to subscribe beyond its required topic scope. The Pi still has no
-`robot_state.json` or mission-event producer, so the mission manager, telemetry,
-event-driven delivery progression, ESP32 watchdog, and physical safety remain
-unverified. The local v0.2 ESP32 source has not been compiled, flashed, or
-hardware-tested, and the final single serial-port owner is unresolved. The Pi
-Git checkout is intentionally dirty because the exact deployed working-tree
-bundle is not yet committed. The steps below separate the installed base bridge
-from the work still needed for a complete robot.
+That deployment does **not** verify a complete robot. A later cloud follow-up
+repaired the HTTP 403, validated a replacement Deployment API credential with
+an isolated non-physical 200/202 broker test, and observed presence, state, and
+ACK through the EMQX-to-Supabase path. Its transport security, action
+retry/metrics configuration, and event coverage still require the L7 checks.
+The five specific
+`robot-01-pi` MQTT permissions are correctly scoped. The corrected L8
+regression also denied the temporary L6 identity a physical cross-robot command
+subscription, wildcard command subscription, and unowned command publication.
+The Pi still has no `robot_state.json` or mission-event producer, so the
+mission manager, telemetry, event-driven delivery progression,
+ESP32 watchdog, and physical safety remain unverified. The local v0.2 ESP32
+source has not been compiled, flashed, or hardware-tested, and the final
+single serial-port owner is unresolved. The Pi Git checkout is intentionally
+dirty because the exact deployed working-tree bundle is not yet committed. The
+steps below separate the installed base bridge from the work still needed for a
+complete robot.
 
 ### 29.1 Provision the operating system
 

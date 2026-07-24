@@ -63,7 +63,11 @@ npx supabase functions deploy dispatch-delivery
 npx supabase functions deploy ingest-robot-message --no-verify-jwt
 ```
 
-Restrict the EMQX credentials to the publish API and the robot command topic namespace. A command is first recorded in `robot_commands`, published with QoS 1, and then acknowledged by the Pi.
+EMQX Serverless Deployment API keys are full-access and cannot be
+permission-scoped. Keep the App ID/App Secret only in Supabase server-side
+secrets, rotate them if exposed, and use EMQX MQTT authorization rules—not the
+Deployment API key—to restrict robot topics. A command is first recorded in
+`robot_commands`, published with QoS 1, and then acknowledged by the Pi.
 
 Supabase Cron runs once per minute and changes overdue `PENDING` or
 `PUBLISHED` commands to `EXPIRED`. Each expiration creates a
@@ -194,11 +198,18 @@ physical robot is still required before operation. GitHub Actions runs the Pi
 and ESP32 contract checks, frontend checks, the EMQX publish-response test, and
 the local integration suite on every pull request and push to `main`.
 
-Current audit status: the frontend suite, EMQX publish-response test, and Pi and
-ESP32 host suites pass locally without production credentials (12 frontend, 27
-Pi, and 4 ESP32 tests). The Docker-backed pgTAP/Edge Function suite has not yet
-been run against the new `011` migration. Do not deploy the pending database
-and Edge Function changes until `npm run test:integration` passes.
+Current audit status: the completed 21 July local gate included the Docker-backed
+pgTAP/Edge Function suite, and migrations `010`/`011` plus both Edge Functions
+are now deployed. The current fast gate also passes locally without production
+credentials (15 frontend tests, 30 Pi tests, 4 ESP32 protocol tests, TypeScript,
+Vite build, and the EMQX publish-response test). The local webhook-contract test
+requires Docker Desktop's Linux engine to be running; its current unavailability
+is an environment prerequisite, not a source failure. The isolated broker
+response probe has passed (HTTP 200 with a non-physical subscriber and HTTP 202
+after it stopped). A live isolated application dispatch also passed through the
+real EMQX action: the delivery became `DISPATCHED`, and the simulator ACK changed
+the command to `ACKNOWLEDGED`. Event-driven delivery progression and the secure
+EMQX action configuration remain required before operation.
 
 The local Docker namespace is intentionally fixed as
 `miit-rover-integration`. If that local stack is already running, the test
@@ -273,7 +284,7 @@ An initial read-only audit found the pre-hardening bridge. A later
 user-authorized maintenance pass deployed the exact tested EV-folder bridge
 bundle:
 
-- `pi-agent-1.3.0` is installed under the enabled systemd service. All 27 Pi
+- `pi-agent-1.3.0` is installed under the enabled systemd service. All 30 Pi
   tests passed locally, from the staged Pi bundle, and again from the installed
   root-owned source as the `rover` account.
 - After restart, time synchronization completed, MQTT/TLS connected, the QoS-1
@@ -313,6 +324,29 @@ bundle:
   and push the matching EV-folder changes before reconciling or pulling that
   checkout.
 
+### Hosted cloud follow-up: 23–24 July 2026
+
+The preceding audit records the state on 21 July only. A later hosted
+verification applied the current migrations, deployed both Edge Functions,
+and repaired the EMQX Deployment API HTTP 403. A replacement Deployment API
+credential is active in Supabase. A short-lived isolated subscriber received a
+safe test command after a broker HTTP 200 response; after it was stopped, the
+same test publish returned `202 no_matching_subscribers`. A guarded
+non-physical simulator then supplied fresh presence/state through the real HTTP
+action. A real authenticated dispatch became `DISPATCHED`, and its command
+became `ACKNOWLEDGED` after the simulated ACK. None of these tests used the
+physical robot.
+
+This is not a production acceptance result yet. The EMQX action must use the
+ingestion-function path and protected header, verify the HTTPS certificate,
+and be checked for retry/backoff and failure metrics. Presence, state, and ACK
+have live isolated evidence; the event branch and event-driven delivery
+progression remain to be proven. The corrected client and All Users
+authorization rules pass the safe regression: the test client's own
+subscription succeeds, while physical cross-robot and wildcard command
+subscriptions and an unowned command publication are denied. See
+[Remainding.md](Remainding.md) for the exact current gates.
+
 ## MQTT topics
 
 ```text
@@ -324,6 +358,19 @@ miit/robots/{robotId}/presence
 ```
 
 Do not publish video frames or continuous motor-control messages through MQTT.
+
+For the isolated L6 regression only, `robot-pi/l6_simulator.py` is hard-locked
+to the non-physical `robot-test-l6` identity. It publishes controlled
+presence/state/ACK messages, never mission events or motor commands, and stops
+automatically after a bounded duration. Supply its broker settings only through
+uncommitted environment variables:
+
+```bash
+L6_MQTT_HOST=...
+L6_MQTT_USERNAME=...
+L6_MQTT_PASSWORD=...
+python robot-pi/l6_simulator.py --duration 900
+```
 
 ## Cloudflare Workers frontend deployment
 
@@ -350,7 +397,13 @@ The remaining work is split by execution location:
 - [RemaindingRaspberryPi.md](RemaindingRaspberryPi.md) — Pi deployment,
   ESP32 commissioning, navigation, physical safety, and supervised testing.
 
-The two immediate application safeguards are:
+The immediate cloud-release gates are the remaining L6-L10 items in
+`Remainding.md`: delete the retired Deployment API credential and temporary
+test resources after retaining redacted evidence, finish the existing HTTP
+action's TLS/retry/metrics configuration, test the event branch and event-driven
+delivery progression, and deploy/smoke-test the updated frontend. L8
+default-deny authorization is already verified and must be preserved. After
+those gates, the next application safeguards are:
 
 1. Add server-enforced rate limiting and abuse protection to authenticated
    delivery creation and command calls.

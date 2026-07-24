@@ -52,6 +52,18 @@ describe("MIIT Rover delivery workflows", () => {
     expect(await screen.findByRole("button", { name: "Advance demo checkpoint" })).toBeTruthy();
   }, 15_000);
 
+  it("allows selecting any displayed robot before assignment", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("link", { name: "Dispatch center" }));
+    await user.click(screen.getByText("MIIT-1050"));
+
+    const rover = screen.getByRole("button", { name: /Rover 03/i });
+    expect((rover as HTMLButtonElement).disabled).toBe(false);
+    await user.click(rover);
+    expect(rover.getAttribute("aria-pressed")).toBe("true");
+  });
+
   it("requires confirmation before an emergency stop", async () => {
     const user = userEvent.setup();
     render(<App />);

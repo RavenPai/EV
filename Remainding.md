@@ -1,6 +1,6 @@
 # Remaining Laptop, EV-Folder, and Cloud Tasks
 
-Updated: 21 July 2026
+Updated: 24 July 2026
 
 This file contains only work that remains on the development laptop, in the
 EV repository, or in the Supabase, EMQX, GitHub, and Cloudflare consoles.
@@ -21,12 +21,25 @@ device identifiers into this file, Git, screenshots, SQL results, or logs.
 - The Cloudflare frontend is already deployed.
 - The Raspberry Pi bridge is deployed as `pi-agent-1.3.0`.
 - The historical Step 13.2 controlled command handoff is recorded as done.
-- The reviewed implementation snapshot is committed and pushed through
-  `4f77166dc7e78ff366ec5c71435d034b44fa2594`.
+- The reviewed implementation history includes
+  `4f77166dc7e78ff366ec5c71435d034b44fa2594`, `e24839c` (L6 evidence + ESP32
+  `MIIT_ENABLE_MOTOR_OUTPUTS 1`), and `d09fae4`/`547396b`/`3f43786`.
 - Local validation Steps L1-L3 passed on 21 July 2026, including the
   Docker-backed Supabase/Edge Function integration suite and GitHub CI.
-- The pending cloud migrations/functions and hardened EMQX path are not yet
-  deployed and verified as one current stack.
+- L4-L5 are complete against the hosted stack: migrations `010`/`011` are
+  applied and both Edge Functions are active. L6 has authenticated
+  delivered/acknowledged and no-subscriber evidence; only credential and
+  temporary-test cleanup remains. L7 has live presence/state/ACK evidence but
+  still needs certificate verification, action retry/metrics checks, and an
+  event test. L8 passes its safe allow/deny regression. L9 is partially
+  complete through dispatch and ACK; event-driven lifecycle and invalid/replay
+  cases remain. L10-L21 remain not started.
+  See each step below for exact evidence and gaps.
+- The ESP32 firmware source (`MIIT_Rover_ESP32_Firmware_v0.2.0/`) now exists
+  in the repository, and `MIIT_ENABLE_MOTOR_OUTPUTS` was set to `1` on
+  23 July 2026 — confirm the README's pre-motor-enable safety checklist
+  (rated driver, fused channels, independent E-stop, raised wheels, per-motor
+  direction check) was actually completed before this is flashed to a board.
 
 Complete the following steps in order. Do not deploy a later step when an
 earlier gate has failed.
@@ -185,8 +198,9 @@ Status 2026-07-22: complete from the EV folder.
 - Hosted schema dump and public-data dump were written under `.local-backups/`,
   which is Git-ignored.
 - All three active-command collision checks returned `0`.
-- `npx supabase db push --linked --dry-run` showed only
-  `202607210011_robot_ingestion_safety_followup.sql` pending.
+- Historical pre-apply evidence: the 22 July dry run showed only
+  `202607210011_robot_ingestion_safety_followup.sql` pending. After Step L5,
+  the 24 July dry run reports that the remote database is up to date.
 
 ### Step L5 — Apply migrations and deploy both Edge Functions
 
@@ -229,13 +243,49 @@ Status 2026-07-22: complete.
 
 ### Step L6 — Repair and verify EMQX command publication
 
-- [ ] Create or verify a least-privilege EMQX Deployment API credential.
-- [ ] Confirm the API base URL resolves to the deployment publish endpoint.
-- [ ] Create a clearly labelled, isolated non-physical test robot, subscriber,
-  credentials, and delivery for exhaustive publish-result testing.
-- [ ] Confirm the physical Pi subscriber separately before any truthful,
-  motor-disconnected robot check.
-- [ ] Inspect the API response and the resulting database transaction.
+Status 2026-07-24: the isolated application path is functionally complete. A
+replacement Deployment API credential is active in Supabase; live non-physical
+tests covered delivered/acknowledged and no-subscriber outcomes, while local
+tests cover ambiguous timeout/5xx classification and database reconciliation.
+The remaining L6 work is credential and temporary-test cleanup.
+
+- [x] Verify that a Deployment API App ID/App Secret (not a robot MQTT login)
+  authenticates to the Broker Deployment API.
+- [x] Confirm the configured base URL resolves to the publish endpoint.
+- [x] Create the clearly labelled non-physical `robot-test-l6` database robot.
+- [x] Capture historical, read-only evidence of the physical Pi command
+  subscription. Recheck it immediately before any future test; a historical
+  connection snapshot is not proof of current robot readiness.
+- [x] Inspect an authenticated safe publish response and historical command
+  audit records without issuing a new physical movement request.
+- [x] Create a replacement EMQX Serverless Deployment API App ID/App Secret,
+  update `EMQX_API_KEY` and `EMQX_API_SECRET` in Supabase, and verify it with
+  safe non-robot Broker API probes.
+- [ ] In the EMQX Cloud console, delete the retired Deployment API credential
+  after retaining the replacement-key evidence. Do not change
+  `ROBOT_INGEST_SECRET` for this rotation.
+- [x] Record the Serverless limitation: Deployment API keys have full access
+  and cannot be permission-scoped. Mitigate it with server-only Supabase
+  secrets, rotation, no logs/screenshots, and a move to a plan with scoped
+  keys if that risk is unacceptable.
+- [x] Create a separate temporary MQTT identity and use it as an isolated
+  subscriber on the `robot-test-l6` command topic. It was never used to send
+  a physical-robot command.
+- [x] Correct and safely retest the temporary identity's authorization under
+  Step L8.
+- [x] Create an isolated delivery through the real authenticated normal-user
+  and staff workflow.
+- [x] Add and test the guarded `robot-pi/l6_simulator.py` utility. It is locked
+  to `robot-test-l6`, publishes only test presence/state/ACK messages, emits no
+  mission events, and cannot address `robot-01`.
+- [x] Record safe isolated Broker API results: HTTP 200 with the temporary
+  subscriber connected and HTTP 202 `no_matching_subscribers` after it was
+  stopped. Local tests cover timeout/5xx result classification.
+- [x] Finish the authenticated database transaction portion of the isolated
+  matrix: HTTP 200/delivered, 202/no-subscriber, timeout/5xx, and the exact
+  resulting command and delivery states.
+- [ ] Delete the temporary test identity, credentials, and delivery after the
+  evidence is retained.
 
 Never make the physical robot appear ready by fabricating `ONLINE`/`IDLE` or
 healthy LiDAR, camera, or ESP32 telemetry. A real web `START_MISSION` is deferred
@@ -251,46 +301,40 @@ Pass evidence:
   delivery `ASSIGNED`.
 - Timeout, 5xx, or an unknown response remains `PUBLISH_UNKNOWN` and is
   reconciled instead of blindly retried.
-- The earlier HTTP `403` condition no longer occurs.
-- The isolated test identity remains tightly restricted through Steps P3–P5
-  and L9, then is disabled or removed after L9 evidence collection.
+- The authenticated safe probes and isolated workflow on 24 July did not
+  return HTTP `403`; the matching-subscriber path returned HTTP 200.
+- The isolated test identity must be tightly restricted through Steps P3–P5,
+  L8, and L9, then be disabled or removed after L9 evidence collection.
 
-Status 2026-07-23: partially complete from the EV folder.
-
-- A Deployment API credential (App ID/App Secret, not the robot's MQTT login)
-  is configured in `EMQX_API_KEY`/`EMQX_API_SECRET`/`EMQX_API_URL`. A direct
-  read-only `GET /api/v5/clients/robot-01-pi` call succeeded, confirming the
-  base URL resolves to this deployment's API and the credential authenticates.
-- Least-privilege is not yet confirmed: the same credential could read live
-  client/subscription data (an admin/monitoring-scope capability), not only
-  publish. Verify in the EMQX Cloud console whether a narrower-scoped key is
-  available, or accept and document the current scope as a conscious
-  trade-off.
-- Physical Pi subscriber confirmed independently of any dispatch test:
-  `robot-01-pi` is `connected:true` (connected 2026-07-23T15:15:17Z) with
-  exactly one subscription, `miit/robots/robot-01/commands` at QoS 1 — no
-  unexpected topics.
-- Two real `START_MISSION` publish attempts against the physical `robot-01`
-  from 2026-07-21 both show `published_at` populated (broker accepted the
-  publish) and later `EXPIRED` ("Command TTL elapsed before robot
-  acknowledgement"). This is consistent with the publish path working and the
-  Step L7 return path (EMQX-to-Supabase webhook for `acks`/`state`/`events`/
-  `presence`) still being broken, not a Step L6 failure. No motion resulted:
-  `robot-pi/mission_manager.py` (Step L15) does not exist yet to act on a
-  received command.
-- An isolated non-physical test robot, `robot-test-l6`, now exists in
-  `public.robots` (status `ONLINE`, clearly named, no physical hardware) for
-  exhaustive publish-result testing without touching `robot-01`.
-- The matching isolated test delivery could not be created from the EV folder:
-  `deliveries` has a `before insert` trigger
-  (`set_authenticated_delivery_requester`) that raises unless `auth.uid()` is a
-  real authenticated session — there is no service-role bypass, by design. A
-  logged-in user must create the delivery, then staff must approve/assign it to
-  `robot-test-l6` and dispatch, before the publish-result matrix (200 delivered,
-  202 no-subscriber, timeout/5xx) can be exercised end-to-end and this step
-  closed.
-- `robot-test-l6` should be deleted after L6/L9 evidence collection, per the
-  temporary-identity cleanup rule.
+- A Deployment API credential (App ID/App Secret, not a robot MQTT login) is
+  configured in `EMQX_API_KEY`/`EMQX_API_SECRET`/`EMQX_API_URL`. A direct
+  `GET /api/v5/clients` probe returned HTTP 200, and a safe non-robot
+  `POST /api/v5/publish` probe returned HTTP 202 `no_matching_subscribers`
+  rather than HTTP 403. This proves the credentials and publish endpoint, but
+  not a delivered mission.
+- The credential can read live client/subscription data because EMQX Serverless
+  Deployment API keys are full-access and cannot be scoped. The replacement is
+  kept only in Supabase server-side secrets; delete the retired key and never
+  copy the replacement to Pi files, browser variables, screenshots, or Git.
+- A 24 July read-only SSH check found the physical bridge service active,
+  MQTT connected, and its `robot-01` command subscription ready; the serial
+  link was also reported connected. This proves only bridge connectivity—do
+  not treat it as telemetry, mission, or movement readiness.
+- Earlier physical `START_MISSION` audit records are historical handoff
+  evidence only. No current physical dispatch, movement, or autonomous
+  delivery is authorized by this step.
+- An isolated non-physical test robot, `robot-test-l6`, exists in
+  `public.robots` (clearly named, no physical hardware). A real authenticated
+  user created its delivery and verified staff approved, assigned, and
+  dispatched it through the application.
+- On 24 July, a short-lived isolated subscriber received the safe test command
+  after a Broker API HTTP 200 response. After that subscriber was stopped, the
+  same safe publish returned HTTP 202. No message was published to, received
+  by, or acted on by the physical robot.
+- The guarded simulator later supplied fresh test-only presence/state through
+  the real EMQX action. The authenticated dispatch created a published command,
+  changed the delivery to `DISPATCHED`, and the simulator ACK changed the
+  command to `ACKNOWLEDGED`. The simulator was then stopped.
 
 ### Step L7 — Repair and verify the EMQX-to-Supabase HTTP action
 
@@ -325,7 +369,8 @@ non-2xx retry/backoff and inspect connector/action metrics.
 
 Pass evidence for this configuration checkpoint:
 
-- The connector is healthy and uses the intended HTTPS endpoint.
+- The connector is healthy, uses the intended HTTPS endpoint, and verifies
+  the endpoint certificate.
 - The SQL rule test produces every required envelope field for all four topic
   branches.
 - The action is linked to the rule and maps the complete JSON body plus the
@@ -333,18 +378,32 @@ Pass evidence for this configuration checkpoint:
 - A controlled configuration test has no connector, TLS, template, or action
   error.
 
-Close Step L7 at this configuration checkpoint, then complete L8 and Pi Steps
-P3–P5. Their live validation, presence, event, idempotency, and ordering evidence
-is evaluated with the isolated state/ACK regression in Step L9.
+Status 2026-07-24: functional presence, state, and ACK evidence exists, but the
+secure release gate is not complete.
 
-Status 2026-07-22: not complete from the EV folder.
+- [x] One connected HTTP Server connector, one enabled rule covering the four
+  required topics, and one available HTTP action exist. The former disconnected
+  connector was deleted, so do not create a duplicate pipeline.
+- [x] Preserve the existing `ROBOT_INGEST_SECRET`; deleting a connector does
+  not require a new ingestion secret.
+- [x] A live Pi presence heartbeat previously updated `bridge_online` and
+  `bridge_last_seen`, proving the return path can reach Supabase.
+- [ ] In the action, verify `POST`, the
+  `/functions/v1/ingest-robot-message` path, complete envelope body, and the
+  protected `x-emqx-secret` header without recording its value.
+- [ ] Enable TLS certificate verification with a valid CA/trust chain. A
+  connected HTTPS connector with verification disabled is useful functional
+  evidence, not production-ready transport security.
+- [ ] Configure and inspect non-2xx retry/backoff and action metrics.
+- [x] Send controlled presence, state, and ACK messages through the real rule
+  and verify their database effects with the isolated test robot.
+- [ ] Send a controlled event through the real rule and verify its database
+  effect. Do not use a physical mission event for this configuration check.
 
-- The hosted ingestion function is deployed and its shared-secret name exists.
-- The EV folder cannot verify or repair the EMQX Cloud HTTP Server connector,
-  rule action, retry settings, or action metrics without EMQX console/API
-  access.
-- The current hosted robot rows still show stale/offline bridge timestamps; no
-  fresh broker-to-Supabase presence was observed during this EV-folder pass.
+Presence alone does not advance `last_seen`, `telemetry_received_at`, or
+`telemetry_at`; the isolated state regression verified that a valid state
+snapshot does. The physical robot still needs a real mission-manager state
+producer and real sensor evidence before physical dispatch.
 
 ### Step L8 — Enforce least-privilege EMQX authorization
 
@@ -364,18 +423,30 @@ Pass evidence:
   publication fail.
 - MQTT device credentials and Deployment API credentials are different.
 
-Status 2026-07-22: not complete from the EV folder.
+Status 2026-07-24: complete for the current client authorization regression.
 
-- Authorization rules must be changed and tested in EMQX Cloud.
-- The EV folder has no safe non-interactive access to the broker authorization
-  configuration. Do not paste MQTT passwords into shell commands or commit them
-  into a local env file.
+- The five Client ID allow rules for `robot-01-pi` correctly permit only its
+  four outbound topics and its own `commands` subscription.
+- [x] Remove the misplaced `robot-01` Allow rules from **All Users**. The
+  physical robot's five rules remain scoped to its own Client ID.
+- [x] Retain the final **All Users** fallback: topic `#`, action
+  `Publish & Subscribe`, permission `Deny`.
+- [x] Safely verify the temporary identity: its own test command subscription
+  was granted; the physical `robot-01` command subscription and a command
+  wildcard subscription returned `Not authorized`; an MQTT v5 publish to an
+  unowned dummy command topic returned `Not authorized`. No physical command
+  was published and no physical message was received.
+- Keep the temporary Client ID/username restricted to its one command
+  subscription and four outbound topic publishes until it is deleted after
+  L9. Do not paste MQTT passwords into shell commands or commit them into a
+  local env file.
 
 ### Step L9 — Run isolated cloud regression and truthful Pi checks
 
-Depends on Pi Steps P3–P5. Keep motor power disconnected. Step P10 is reserved
-for the later real mission-manager path and is not required for the isolated
-cloud regression.
+Finish the unchecked L7 configuration/event work and retain the applicable Pi
+Steps P3–P5 evidence. Keep motor power disconnected. Step P10 is reserved for
+the later real mission-manager path and is not required for the isolated cloud
+regression.
 
 Part A — isolated non-physical test robot:
 
@@ -435,12 +506,22 @@ Pass evidence:
 - The temporary identity and credentials are disabled or removed after the
   final evidence is retained.
 
-Status 2026-07-22: not complete.
+Status 2026-07-24: partially complete.
 
-- L9 depends on L6, L7, L8, and Pi Steps P3-P5.
-- The hosted database and Edge Functions are ready for this test, but the EV
-  folder lacks the authenticated normal-user/staff test credentials and the
-  temporary EMQX isolated test identity needed to run the full workflow.
+- [x] An authenticated user/staff workflow created, approved, assigned, and
+  dispatched an isolated delivery to `robot-test-l6`.
+- [x] The real broker/action path ingested controlled presence, state, and ACK.
+  The delivery reached `DISPATCHED`, and its matching command reached
+  `ACKNOWLEDGED`.
+- [x] The same isolated path recorded both HTTP 200 with a subscriber and HTTP
+  202 after the subscriber stopped. Timeout/5xx behavior is covered locally.
+- [ ] Send a controlled linked event through the real action and prove
+  event-driven delivery advancement.
+- [ ] Complete the duplicate, expired, malformed, wrong-robot, bad-secret,
+  forbidden-topic, stale-state, replay-conflict, and impossible-transition
+  cases against the isolated stack.
+- [ ] Retain redacted evidence, then remove the temporary MQTT identity, test
+  robot, and test delivery records.
 - Physical Pi truth checks must use real retained broker/Supabase evidence and
   must not fabricate online, idle, sensor, ACK, or mission-state data.
 
