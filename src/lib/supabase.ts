@@ -1,6 +1,13 @@
 import { createClient } from "@supabase/supabase-js";
+import { resolveSupabaseUrl } from "./supabase-url";
 
-const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+const configuredUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+const url = resolveSupabaseUrl({
+  configuredUrl,
+  proxyPath: import.meta.env.VITE_SUPABASE_PROXY_PATH as string | undefined,
+  browserOrigin: typeof window === "undefined" ? undefined : window.location.origin,
+  production: import.meta.env.PROD,
+});
 const publishableKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined;
 const testMode = import.meta.env.MODE === "test";
 

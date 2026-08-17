@@ -26,12 +26,12 @@ navigation/ESP32 phases remain a deferred roadmap, not blockers.
   a human-readable delivery snapshot, the standalone Pi service stores and
   displays it without navigation, and its button publishes one idempotent
   terminal receipt. The full Pi suite passed 59 tests, the frontend suite
-  passed 24 frontend/proxy tests, TypeScript and the production build passed,
+  passed 27 frontend/proxy tests, TypeScript and the production build passed,
   and the EMQX payload tests passed.
 - [x] **DP-L2 — Deploy the cloud changes.** Hosted migration `012` grants the
   location read required by the Edge Function and publishes `robot_commands`
   through Realtime. The updated `dispatch-delivery` function and Cloudflare
-  Worker version `354faaa8-cf35-4906-8559-bf02f1f39d5e` are deployed.
+  Worker version `0768b52b-ca92-447a-ae33-62848ad0aeea` are deployed.
 - [ ] **DP-L3 — Complete the Pi installation.** The reviewed bundle is staged
   on the Pi and passed 29 tests there. Run the one interactive `sudo` installer
   command in `robot-pi/DELIVERY_DISPLAY.md`, then verify the service and local
@@ -45,13 +45,15 @@ navigation/ESP32 phases remain a deferred roadmap, not blockers.
 
 - The Cloudflare frontend is already deployed.
 - A 17 August 2026 recheck deployed Worker version
-  `354faaa8-cf35-4906-8559-bf02f1f39d5e`. Supabase management reported the
+  `0768b52b-ca92-447a-ae33-62848ad0aeea`. Supabase management reported the
   linked project `ACTIVE_HEALTHY`, all 12 local/remote migrations matched, both
   production Edge Functions were active, and the four required EMQX/ingestion
   secret names existed. Because this laptop's network could not route directly
   to the project's public Supabase hostname, the Worker now exposes a fixed
-  `/supabase/*` browser proxy and the production bundle uses it. A Cloudflare
-  remote-runtime check returned HTTP 200 for the app and Auth health, while an
+  `/supabase/*` browser proxy. Production `workers.dev` builds select that
+  same-origin route at runtime, so a dashboard/Git build cannot restore the
+  unreachable direct Supabase URL. A Cloudflare remote-runtime check returned
+  HTTP 200 for the app and Auth health, while an
   intentionally invalid request to the exact refresh-token route returned the
   expected HTTP 400 instead of timing out. Force-refresh the browser and retain
   one successful real-user login as the final browser acceptance evidence.

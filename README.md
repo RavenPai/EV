@@ -464,8 +464,9 @@ npm run deploy:cloudflare
 ```
 
 The included `wrangler.jsonc` configures Cloudflare static assets to serve
-`index.html` for React Router navigation requests. Set `VITE_SUPABASE_URL` to
-the deployed Worker URL plus `/supabase` when the proxy is needed. Only the
+`index.html` for React Router navigation requests. Production `workers.dev`
+deployments select the same-origin `/supabase` proxy automatically; set
+`VITE_SUPABASE_PROXY_PATH=/supabase` for a custom Worker domain. Only the
 browser-safe publishable key crosses this route; service-role and EMQX secrets
 remain in Supabase server-side secrets.
 
