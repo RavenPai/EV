@@ -449,7 +449,11 @@ history.
 ## Cloudflare Workers frontend deployment
 
 The checked-in `wrangler.jsonc` deploys the static Vite output as Cloudflare
-Worker assets with SPA fallback. It is not a Pages-project configuration.
+Worker assets with SPA fallback. It also routes `/supabase/*` through a fixed,
+streaming proxy to the configured Supabase project. This lets browser Auth,
+REST, Realtime, and Edge Function calls work on client networks that cannot
+route directly to the project's `*.supabase.co` hostname. It is not a
+Pages-project configuration.
 
 1. Configure the three `VITE_*` build variables without committing their values.
 2. Authenticate Wrangler for the intended Cloudflare account.
@@ -460,7 +464,10 @@ npm run deploy:cloudflare
 ```
 
 The included `wrangler.jsonc` configures Cloudflare static assets to serve
-`index.html` for React Router navigation requests.
+`index.html` for React Router navigation requests. Set `VITE_SUPABASE_URL` to
+the deployed Worker URL plus `/supabase` when the proxy is needed. Only the
+browser-safe publishable key crosses this route; service-role and EMQX secrets
+remain in Supabase server-side secrets.
 
 ## Remaining work
 

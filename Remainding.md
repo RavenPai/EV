@@ -26,12 +26,12 @@ navigation/ESP32 phases remain a deferred roadmap, not blockers.
   a human-readable delivery snapshot, the standalone Pi service stores and
   displays it without navigation, and its button publishes one idempotent
   terminal receipt. The full Pi suite passed 59 tests, the frontend suite
-  passed 20 tests, TypeScript and the production build passed, and the EMQX
-  payload tests passed.
+  passed 24 frontend/proxy tests, TypeScript and the production build passed,
+  and the EMQX payload tests passed.
 - [x] **DP-L2 — Deploy the cloud changes.** Hosted migration `012` grants the
   location read required by the Edge Function and publishes `robot_commands`
   through Realtime. The updated `dispatch-delivery` function and Cloudflare
-  Worker version `1fde8d4f-ac88-4f4a-9875-ed178d591826` are deployed.
+  Worker version `354faaa8-cf35-4906-8559-bf02f1f39d5e` are deployed.
 - [ ] **DP-L3 — Complete the Pi installation.** The reviewed bundle is staged
   on the Pi and passed 29 tests there. Run the one interactive `sudo` installer
   command in `robot-pi/DELIVERY_DISPLAY.md`, then verify the service and local
@@ -44,6 +44,17 @@ navigation/ESP32 phases remain a deferred roadmap, not blockers.
 ## Current starting point
 
 - The Cloudflare frontend is already deployed.
+- A 17 August 2026 recheck deployed Worker version
+  `354faaa8-cf35-4906-8559-bf02f1f39d5e`. Supabase management reported the
+  linked project `ACTIVE_HEALTHY`, all 12 local/remote migrations matched, both
+  production Edge Functions were active, and the four required EMQX/ingestion
+  secret names existed. Because this laptop's network could not route directly
+  to the project's public Supabase hostname, the Worker now exposes a fixed
+  `/supabase/*` browser proxy and the production bundle uses it. A Cloudflare
+  remote-runtime check returned HTTP 200 for the app and Auth health, while an
+  intentionally invalid request to the exact refresh-token route returned the
+  expected HTTP 400 instead of timing out. Force-refresh the browser and retain
+  one successful real-user login as the final browser acceptance evidence.
 - The Raspberry Pi bridge is deployed as `pi-agent-1.3.0`.
 - The historical Step 13.2 controlled command handoff is recorded as done.
 - The reviewed implementation history includes
