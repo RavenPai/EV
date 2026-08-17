@@ -63,7 +63,7 @@ class CommandContractTests(unittest.TestCase):
                 "deliveryId": DELIVERY_ID,
             },
             "issuedAt": NOW.isoformat(),
-            "expiresAt": (NOW + timedelta(minutes=5)).isoformat(),
+            "expiresAt": (NOW + timedelta(hours=1)).isoformat(),
         }
         envelope.update(overrides)
         return envelope
@@ -76,7 +76,53 @@ class CommandContractTests(unittest.TestCase):
         )
         self.assertEqual(envelope["commandId"], COMMAND_ID)
         self.assertEqual(envelope["payload"]["deliveryId"], DELIVERY_ID)
-        self.assertEqual((expires_at - issued_at).total_seconds(), 300)
+        self.assertEqual((expires_at - issued_at).total_seconds(), 3600)
+
+    def test_command_contract_accepts_acknowledgement_only_delivery_snapshot(self):
+        display_details = {
+            "trackingCode": " MIIT-1065 ",
+            "requesterName": "Campus User",
+            "requesterEmail": "user@miit.edu.mm",
+            "recipientName": "Library Desk",
+            "recipientPhone": "+95 9 123 456 789",
+            "sourceName": "Faculty of Computer Science",
+            "destinationName": "Central Library",
+            "itemName": "Prototype parcel",
+            "category": "Documents",
+            "weightKg": 1.5,
+            "priority": "HIGH",
+            "notes": " Handle with care. ",
+        }
+        command = self.valid_command(
+            payload={
+                **self.valid_command()["payload"],
+                "deliveryMode": "ACKNOWLEDGEMENT_ONLY",
+                "delivery": display_details,
+            }
+        )
+
+        envelope, _issued_at, _expires_at = prepare_command_envelope(
+            command,
+            robot_id="robot-01",
+            now=NOW,
+        )
+
+        payload = envelope["payload"]
+        self.assertEqual(payload["deliveryMode"], "ACKNOWLEDGEMENT_ONLY")
+        self.assertEqual(payload["delivery"]["trackingCode"], "MIIT-1065")
+        self.assertEqual(payload["delivery"]["notes"], "Handle with care.")
+        self.assertEqual(payload["delivery"]["weightKg"], 1.5)
+        self.assertEqual(payload["delivery"]["priority"], "HIGH")
+
+    def test_command_contract_keeps_legacy_start_mission_compatible(self):
+        envelope, _issued_at, _expires_at = prepare_command_envelope(
+            self.valid_command(expiresAt=(NOW + timedelta(minutes=5)).isoformat()),
+            robot_id="robot-01",
+            now=NOW,
+        )
+
+        self.assertNotIn("deliveryMode", envelope["payload"])
+        self.assertNotIn("delivery", envelope["payload"])
 
     def test_expired_duplicate_can_be_identified_before_rejection(self):
         envelope, _issued_at, expires_at = prepare_command_envelope(
@@ -92,7 +138,7 @@ class CommandContractTests(unittest.TestCase):
 
     def test_command_contract_rejects_unbounded_or_ambiguous_input(self):
         invalid_commands = [
-            self.valid_command(expiresAt=(NOW + timedelta(minutes=6)).isoformat()),
+            self.valid_command(expiresAt=(NOW + timedelta(minutes=61)).isoformat()),
             {**self.valid_command(), "unexpected": True},
             self.valid_command(
                 payload={
@@ -113,6 +159,82 @@ class CommandContractTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     prepare_command_envelope(
                         command,
+                        robot_id="robot-01",
+                        now=NOW,
+                    )
+
+    def test_command_contract_rejects_invalid_delivery_display_fields(self):
+        valid_delivery = {
+            "trackingCode": "MIIT-1065",
+            "requesterName": "Campus User",
+            "requesterEmail": "user@miit.edu.mm",
+            "recipientName": "Library Desk",
+            "recipientPhone": "+95 9 123 456 789",
+            "sourceName": "Faculty of Computer Science",
+            "destinationName": "Central Library",
+            "itemName": "Prototype parcel",
+            "category": "Documents",
+            "weightKg": 1.5,
+            "priority": "HIGH",
+        }
+
+        invalid_payloads = [
+            {
+                **self.valid_command()["payload"],
+                "deliveryMode": "NAVIGATION",
+                "delivery": valid_delivery,
+            },
+            {
+                **self.valid_command()["payload"],
+                "deliveryMode": "ACKNOWLEDGEMENT_ONLY",
+                "delivery": [],
+            },
+            {
+                **self.valid_command()["payload"],
+                "deliveryMode": "ACKNOWLEDGEMENT_ONLY",
+                "delivery": {
+                    key: value
+                    for key, value in valid_delivery.items()
+                    if key != "trackingCode"
+                },
+            },
+            {
+                **self.valid_command()["payload"],
+                "deliveryMode": "ACKNOWLEDGEMENT_ONLY",
+                "delivery": {**valid_delivery, "unexpected": True},
+            },
+            {
+                **self.valid_command()["payload"],
+                "deliveryMode": "ACKNOWLEDGEMENT_ONLY",
+                "delivery": {**valid_delivery, "weightKg": 10.01},
+            },
+            {
+                **self.valid_command()["payload"],
+                "deliveryMode": "ACKNOWLEDGEMENT_ONLY",
+                "delivery": {**valid_delivery, "weightKg": True},
+            },
+            {
+                **self.valid_command()["payload"],
+                "deliveryMode": "ACKNOWLEDGEMENT_ONLY",
+                "delivery": {**valid_delivery, "priority": "CRITICAL"},
+            },
+            {
+                **self.valid_command()["payload"],
+                "deliveryMode": "ACKNOWLEDGEMENT_ONLY",
+                "delivery": {**valid_delivery, "trackingCode": "x" * 41},
+            },
+            {
+                **self.valid_command()["payload"],
+                "deliveryMode": "ACKNOWLEDGEMENT_ONLY",
+                "delivery": {**valid_delivery, "notes": ["not", "text"]},
+            },
+        ]
+
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                with self.assertRaises(ValueError):
+                    prepare_command_envelope(
+                        self.valid_command(payload=payload),
                         robot_id="robot-01",
                         now=NOW,
                     )

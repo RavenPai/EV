@@ -1,5 +1,24 @@
 # MIIT Rover Campus Delivery Project
 
+## Current prototype scope — Raspberry Pi delivery receipt
+
+As of 17 August 2026, the active prototype deliberately stops before physical
+navigation. Staff send a delivery-information snapshot through Supabase and
+EMQX to a Raspberry Pi web display. The Pi stores and shows that information;
+an operator presses **Acknowledge**, and the Pi publishes one MQTT receipt.
+Supabase records the matching command as `COMPLETED` to release its reservation,
+while the frontend truthfully labels it **Acknowledged by Raspberry Pi**.
+
+```text
+Frontend -> Supabase dispatch -> EMQX -> Raspberry Pi display
+Frontend <- Supabase Realtime <- MQTT ingestion <- Pi Acknowledge button
+```
+
+This mode does not use ROS, the ESP32, motors, sensors, mapping, navigation, or
+automated delivery lifecycle events. Autonomous and physical-control sections
+later in this document remain a future roadmap and are not required for the
+current prototype. See `robot-pi/DELIVERY_DISPLAY.md` for deployment.
+
 ## 1. Project summary
 
 MIIT Rover is a full-stack minimum viable product for coordinating autonomous electric-vehicle deliveries across the MIIT campus. It combines:
@@ -260,7 +279,8 @@ The ordering is important:
 
 - Routing is available to the shell and pages.
 - Cloud authentication blocks the protected application before state is loaded.
-- `AppProvider` makes shared deliveries, robots, roles, notifications, and actions available.
+- `AppProvider` makes shared deliveries, robots, command receipts, roles,
+  notifications, and actions available.
 - `AppShell` supplies navigation and global UI.
 - Page components focus on specific workflows.
 
@@ -283,6 +303,7 @@ The ordering is important:
 - Current role.
 - Delivery collection.
 - Robot collection.
+- Latest `START_MISSION` command receipt for each delivery.
 - Notifications.
 - Toast messages.
 - Demo persistence.
@@ -304,7 +325,9 @@ markNotificationsRead
 resetDemo
 ```
 
-Cloud rows use snake_case database fields. `mapCloudDelivery`, `mapCloudRobot`, and `mapCloudNotification` convert them to the camelCase frontend models.
+Cloud rows use snake_case database fields. `mapCloudDelivery`, `mapCloudRobot`,
+`mapCloudMissionCommand`, and `mapCloudNotification` convert them to the
+camelCase frontend models.
 
 ### 7.4 Authentication gate
 

@@ -2,7 +2,7 @@
 
 Cloud-to-robot installation, verification, and autonomous-navigation roadmap
 Prepared for the MIIT Campus Delivery EV project
-Updated: 18 July 2026
+Updated: 17 August 2026
 
 ## 1. What this guide will achieve
 
@@ -44,6 +44,34 @@ Raspberry Pi MQTT agent
 ```
 
 The public frontend, Supabase backend, database, and EMQX broker do not run on the Pi. The Pi runs only robot-side software.
+
+### 1.1 Current display-only prototype path
+
+The current prototype has a smaller Raspberry Pi goal than the autonomous
+roadmap described later in this guide. The Pi only receives and displays a
+delivery, then publishes a terminal command receipt after a local operator
+presses a button.
+It performs no navigation, ESP32 communication, motor control, cargo action, or
+physical delivery transition.
+
+```text
+Frontend -> Supabase -> EMQX -> Pi display -> operator Acknowledge
+         <- Supabase ingestion <- EMQX acknowledgement <----------+
+```
+
+For this scope, follow [robot-pi/DELIVERY_DISPLAY.md](robot-pi/DELIVERY_DISPLAY.md)
+and Steps DP1-DP3 in
+[RemaindingRaspberryPi.md](RemaindingRaspberryPi.md). ROS, Nav2, LiDAR,
+localization, ESP32, and powered-motion sections are deferred future work and
+are not required to complete the display-only prototype.
+
+`miit-delivery-display.service` replaces `miit-rover-agent.service` while this
+mode is active. They reuse one MQTT robot/client identity and must never run at
+the same time. The receipt uses command status `COMPLETED` to release the
+command reservation, but the frontend presents it as "Acknowledged by
+Raspberry Pi." It means only "delivery information received and accepted for
+display" and must not be presented as arrival, package handling, return-home,
+or physical mission completion.
 
 ## 2. Analysis of the supplied `project.md`
 

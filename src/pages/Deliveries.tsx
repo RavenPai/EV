@@ -1,18 +1,20 @@
 import { useMemo, useState } from "react";
-import { CalendarDays, ChevronRight, Clock3, Filter, MapPin, PackageOpen, Search, X } from "lucide-react";
+import { CalendarDays, CheckCircle2, ChevronRight, Clock3, Filter, MapPin, PackageOpen, RadioTower, Search, X } from "lucide-react";
 import { DeliveryTimeline } from "../components/DeliveryTimeline";
 import { StatusPill } from "../components/StatusPill";
 import { useApp } from "../context/AppContext";
 import { getLocation } from "../data/demo";
-import type { Delivery } from "../types";
+import { missionReceiptPresentation } from "../lib/mission-command";
 
 type FilterMode = "ALL" | "ACTIVE" | "WAITING" | "COMPLETED";
 
 export function Deliveries() {
-  const { deliveries, cancelDelivery } = useApp();
+  const { deliveries, missionCommandsByDelivery, cancelDelivery } = useApp();
   const [filter, setFilter] = useState<FilterMode>("ALL");
   const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState<Delivery>();
+  const [selectedId, setSelectedId] = useState<string>();
+  const selected = selectedId ? deliveries.find((delivery) => delivery.id === selectedId) : undefined;
+  const receipt = selected ? missionReceiptPresentation(missionCommandsByDelivery[selected.id]) : undefined;
   const visible = useMemo(() => deliveries.filter((delivery) => {
     const query = search.toLowerCase();
     const matchesSearch = !query || [delivery.trackingCode, delivery.itemName, delivery.recipientName].some((value) => value.toLowerCase().includes(query));
@@ -35,7 +37,7 @@ export function Deliveries() {
             <thead><tr><th>Delivery</th><th>Route</th><th>Package</th><th>Robot</th><th>Status</th><th>Created</th><th aria-label="Actions" /></tr></thead>
             <tbody>
               {visible.map((delivery) => (
-                <tr key={delivery.id} onClick={() => setSelected(delivery)}>
+                <tr key={delivery.id} onClick={() => setSelectedId(delivery.id)}>
                   <td><strong>{delivery.trackingCode}</strong><span>{delivery.recipientName}</span></td>
                   <td><div className="table-route"><i className="source-dot" />{getLocation(delivery.sourceId)?.shortName}<span>→</span><i className="destination-dot" />{getLocation(delivery.destinationId)?.shortName}</div></td>
                   <td><strong>{delivery.itemName}</strong><span>{delivery.weightKg} kg · {delivery.category}</span></td>
@@ -53,15 +55,21 @@ export function Deliveries() {
 
       {selected && (
         <div className="drawer-layer">
-          <button className="drawer-backdrop" onClick={() => setSelected(undefined)} aria-label="Close details" />
+          <button className="drawer-backdrop" onClick={() => setSelectedId(undefined)} aria-label="Close details" />
           <aside className="details-drawer">
-            <div className="drawer-header"><div><span className="eyebrow">Delivery details</span><h2>{selected.trackingCode}</h2></div><button className="icon-button" onClick={() => setSelected(undefined)}><X size={20} /></button></div>
+            <div className="drawer-header"><div><span className="eyebrow">Delivery details</span><h2>{selected.trackingCode}</h2></div><button className="icon-button" onClick={() => setSelectedId(undefined)}><X size={20} /></button></div>
             <div className="drawer-status"><StatusPill value={selected.status} /><StatusPill value={selected.priority} dot={false} /></div>
             <div className="drawer-route">
               <div><i className="route-point source-point" /><span>Pickup</span><strong>{getLocation(selected.sourceId)?.name}</strong></div>
               <div className="drawer-route-line" />
               <div><i className="route-point destination-point" /><span>Destination</span><strong>{getLocation(selected.destinationId)?.name}</strong></div>
             </div>
+            {receipt && (
+              <div className={`drawer-receipt ${receipt.tone}`} role={receipt.tone === "error" ? "alert" : "status"}>
+                {receipt.tone === "success" ? <CheckCircle2 size={19} /> : <RadioTower size={19} />}
+                <div><span>Raspberry Pi receipt</span><strong>{receipt.title}</strong><small>{receipt.detail}</small></div>
+              </div>
+            )}
             <div className="drawer-meta-grid">
               <div><PackageOpen size={17} /><span>Package</span><strong>{selected.itemName}</strong><small>{selected.weightKg} kg · {selected.category}</small></div>
               <div><Clock3 size={17} /><span>ETA</span><strong>{selected.etaMinutes ?? "—"} min</strong><small>Updated live</small></div>
@@ -71,7 +79,7 @@ export function Deliveries() {
             {selected.unlockCode && <div className="unlock-card"><span>Recipient unlock code</span><strong>{selected.unlockCode}</strong><small>Show only after the robot confirms arrival.</small></div>}
             <div className="drawer-section"><h3>Mission timeline</h3><DeliveryTimeline status={selected.status} /></div>
             {selected.notes && <div className="drawer-section"><h3>Handling notes</h3><p>{selected.notes}</p></div>}
-            {["REQUESTED", "APPROVED"].includes(selected.status) && <button className="button button-danger-outline button-full" onClick={() => { void cancelDelivery(selected.id); setSelected(undefined); }}>Cancel request</button>}
+            {["REQUESTED", "APPROVED"].includes(selected.status) && <button className="button button-danger-outline button-full" onClick={() => { void cancelDelivery(selected.id); setSelectedId(undefined); }}>Cancel request</button>}
           </aside>
         </div>
       )}

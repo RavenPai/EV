@@ -57,11 +57,23 @@ ALLOWED_SEVERITIES = {"INFO", "WARNING", "ERROR", "CRITICAL"}
 ALLOWED_COMMANDS = {"START_MISSION", "PAUSE", "RESUME", "RETURN_HOME", "ESTOP"}
 ALLOWED_ACK_STATUSES = {"ACKNOWLEDGED", "REJECTED", "COMPLETED", "FAILED"}
 COMMAND_TTL_SECONDS = {
-    "START_MISSION": 300,
+    # A person may need a few minutes to read a delivery card before pressing
+    # the acknowledgement button on the Raspberry Pi display.
+    "START_MISSION": 3600,
     "PAUSE": 300,
     "RESUME": 300,
     "RETURN_HOME": 300,
     "ESTOP": 60,
+}
+START_MISSION_REQUIRED_FIELDS = {
+    "sourceLocationId",
+    "destinationLocationId",
+    "mapVersion",
+    "deliveryId",
+}
+START_MISSION_DISPLAY_FIELDS = {
+    "deliveryMode",
+    "delivery",
 }
 FUTURE_TOLERANCE = timedelta(minutes=5)
 MAX_ROBOT_MESSAGE_BYTES = 32 * 1024
@@ -92,6 +104,7 @@ def parse_timestamp(
     field: str = "at",
     *,
     now: datetime | None = None,
+    allow_future: bool = False,
 ) -> datetime:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} must be an ISO-8601 timestamp")
@@ -104,7 +117,7 @@ def parse_timestamp(
 
     parsed = parsed.astimezone(timezone.utc)
     reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    if parsed > reference + FUTURE_TOLERANCE:
+    if not allow_future and parsed > reference + FUTURE_TOLERANCE:
         raise ValueError(f"{field} is too far in the future")
     return parsed
 
@@ -267,19 +280,24 @@ def prepare_command_envelope(
 
     reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     issued_at = parse_timestamp(envelope["issuedAt"], "issuedAt", now=reference)
-    expires_at = parse_timestamp(envelope["expiresAt"], "expiresAt", now=reference)
+    # Expiry is expected to be in the future. Its safe upper bound is enforced
+    # below from the signed command lifetime rather than the timestamp-skew
+    # rule used for observations and issuedAt.
+    expires_at = parse_timestamp(
+        envelope["expiresAt"],
+        "expiresAt",
+        now=reference,
+        allow_future=True,
+    )
     lifetime = (expires_at - issued_at).total_seconds()
     if lifetime <= 0 or lifetime > COMMAND_TTL_SECONDS[command]:
         raise ValueError(f"{command} command lifetime is invalid")
 
     if command == "START_MISSION":
-        expected_payload = {
-            "sourceLocationId",
-            "destinationLocationId",
-            "mapVersion",
-            "deliveryId",
-        }
-        if set(payload) != expected_payload:
+        payload_fields = set(payload)
+        if not START_MISSION_REQUIRED_FIELDS.issubset(payload_fields) or payload_fields.difference(
+            START_MISSION_REQUIRED_FIELDS | START_MISSION_DISPLAY_FIELDS
+        ):
             raise ValueError("START_MISSION payload fields are invalid")
         normalized_payload = dict(payload)
         normalized_payload["deliveryId"] = as_uuid(payload["deliveryId"], "deliveryId")
@@ -287,6 +305,68 @@ def prepare_command_envelope(
             value = payload[field]
             if not isinstance(value, str) or not value.strip() or len(value) > 128:
                 raise ValueError(f"{field} must be a non-empty string up to 128 characters")
+            normalized_payload[field] = value.strip()
+
+        if "deliveryMode" in payload:
+            normalized_payload["deliveryMode"] = _enum(
+                payload["deliveryMode"],
+                "deliveryMode",
+                {"ACKNOWLEDGEMENT_ONLY"},
+            )
+        if "delivery" in payload:
+            delivery = payload["delivery"]
+            if not isinstance(delivery, dict):
+                raise ValueError("delivery must be a JSON object")
+            required_delivery_fields = {
+                "trackingCode",
+                "requesterName",
+                "requesterEmail",
+                "recipientName",
+                "recipientPhone",
+                "sourceName",
+                "destinationName",
+                "itemName",
+                "category",
+                "weightKg",
+                "priority",
+            }
+            if not required_delivery_fields.issubset(delivery) or set(delivery).difference(
+                required_delivery_fields | {"notes"}
+            ):
+                raise ValueError("delivery display fields are invalid")
+
+            normalized_delivery = dict(delivery)
+            string_limits = {
+                "trackingCode": 40,
+                "requesterName": 160,
+                "requesterEmail": 320,
+                "recipientName": 160,
+                "recipientPhone": 40,
+                "sourceName": 200,
+                "destinationName": 200,
+                "itemName": 160,
+                "category": 80,
+                "notes": 500,
+            }
+            for field, maximum_length in string_limits.items():
+                if field not in delivery:
+                    continue
+                value = delivery[field]
+                if not isinstance(value, str) or len(value) > maximum_length:
+                    raise ValueError(
+                        f"delivery.{field} must be a string up to {maximum_length} characters"
+                    )
+                normalized_delivery[field] = value.strip()
+
+            normalized_delivery["weightKg"] = _as_number(
+                delivery["weightKg"], "delivery.weightKg", 0.01, 10
+            )
+            normalized_delivery["priority"] = _enum(
+                delivery["priority"],
+                "delivery.priority",
+                {"NORMAL", "HIGH", "URGENT"},
+            )
+            normalized_payload["delivery"] = normalized_delivery
     else:
         if set(payload).difference({"reason"}):
             raise ValueError(f"{command} payload fields are invalid")

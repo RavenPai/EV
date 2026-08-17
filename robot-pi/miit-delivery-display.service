@@ -1,0 +1,25 @@
+[Unit]
+Description=MIIT Raspberry Pi delivery display and MQTT acknowledgement
+Wants=network-online.target time-sync.target
+After=network-online.target time-sync.target
+Conflicts=miit-rover-agent.service
+
+[Service]
+Type=simple
+User=rover
+Group=rover
+WorkingDirectory=/opt/miit-rover/source/robot-pi
+EnvironmentFile=/etc/miit-rover/robot.env
+ExecStart=/opt/miit-rover/source/robot-pi/.venv/bin/python /opt/miit-rover/source/robot-pi/delivery_display.py
+Restart=always
+RestartSec=3
+TimeoutStopSec=10
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/miit-rover
+
+[Install]
+WantedBy=multi-user.target

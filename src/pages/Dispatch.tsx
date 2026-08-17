@@ -1,20 +1,23 @@
 import { useMemo, useState } from "react";
-import { AlertTriangle, ArrowRight, Bot, Check, Clock3, PackageCheck, RadioTower, Route, ShieldCheck, UserRound, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, Bot, Check, CheckCircle2, Clock3, PackageCheck, RadioTower, Route, ShieldCheck, UserRound, X } from "lucide-react";
 import { StatusPill } from "../components/StatusPill";
 import { useApp } from "../context/AppContext";
 import { getLocation } from "../data/demo";
 import { functionErrorMessage } from "../lib/function-error";
+import { missionReceiptPresentation } from "../lib/mission-command";
 import { cloudEnabled } from "../lib/supabase";
 import type { Delivery } from "../types";
 
 export function Dispatch() {
-  const { deliveries, robots, approveDelivery, assignDelivery, dispatchDelivery, cancelDelivery, advanceDelivery } = useApp();
+  const { deliveries, robots, missionCommandsByDelivery, approveDelivery, assignDelivery, dispatchDelivery, cancelDelivery, advanceDelivery } = useApp();
   const queue = useMemo(() => deliveries.filter((delivery) => !["COMPLETED", "CANCELLED", "FAILED"].includes(delivery.status)), [deliveries]);
   const [selectedId, setSelectedId] = useState(queue[0]?.id);
   const selected = queue.find((delivery) => delivery.id === selectedId) ?? queue[0];
   const [robotChoice, setRobotChoice] = useState(selected?.robotId ?? "robot-01");
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string>();
+  const missionCommand = selected ? missionCommandsByDelivery[selected.id] : undefined;
+  const receipt = missionReceiptPresentation(missionCommand);
 
   const run = async (action: () => Promise<void>) => {
     setBusy(true);
@@ -31,7 +34,7 @@ export function Dispatch() {
   const nextAction = (delivery: Delivery) => {
     if (delivery.status === "REQUESTED") return { label: "Approve request", action: () => approveDelivery(delivery.id), icon: Check };
     if (delivery.status === "APPROVED") return { label: "Assign selected robot", action: () => assignDelivery(delivery.id, robotChoice), icon: Bot };
-    if (delivery.status === "ASSIGNED") return { label: "Dispatch mission", action: () => dispatchDelivery(delivery.id), icon: RadioTower };
+    if (delivery.status === "ASSIGNED") return { label: cloudEnabled ? "Send to Raspberry Pi" : "Dispatch mission", action: () => dispatchDelivery(delivery.id), icon: RadioTower };
     if (cloudEnabled) return undefined;
     return { label: "Advance demo checkpoint", action: () => advanceDelivery(delivery.id), icon: ArrowRight };
   };
@@ -81,9 +84,17 @@ export function Dispatch() {
                 </button>
               ))}
             </div>
-            <div className="dispatch-safety-note"><AlertTriangle size={17} /><p>Dispatch sends a mission-level command. The Raspberry Pi plans movement locally; the web app never streams motor directions.</p></div>
+            <div className="dispatch-safety-note"><RadioTower size={17} /><p>This prototype sends delivery information to the Raspberry Pi only. It does not start navigation, motors, ROS, or an automated delivery.</p></div>
             {actionError && <div className="dispatch-error-note" role="alert"><AlertTriangle size={17} /><p>{actionError}</p></div>}
-            {cloudEnabled && selected.status === "DISPATCHED" && <div className="dispatch-safety-note"><RadioTower size={17} /><p>Command published. Waiting for the Raspberry Pi to acknowledge it and publish <code>MISSION_STARTED</code>.</p></div>}
+            {cloudEnabled && selected.status === "DISPATCHED" && receipt && (
+              <div className={`dispatch-receipt-note ${receipt.tone}`} role={receipt.tone === "error" ? "alert" : "status"}>
+                {receipt.tone === "success" ? <CheckCircle2 size={18} /> : receipt.tone === "error" ? <AlertTriangle size={18} /> : <RadioTower size={18} />}
+                <div><strong>{receipt.title}</strong><p>{receipt.detail}</p></div>
+              </div>
+            )}
+            {cloudEnabled && selected.status === "DISPATCHED" && !receipt && (
+              <div className="dispatch-receipt-note waiting" role="status"><RadioTower size={18} /><div><strong>Loading Raspberry Pi acknowledgment</strong><p>The command status will appear here automatically.</p></div></div>
+            )}
             <div className="dispatch-actions">
               {["REQUESTED", "APPROVED"].includes(selected.status) && <button className="button button-danger-outline" onClick={() => void run(() => cancelDelivery(selected.id))}><X size={16} />Reject</button>}
               {action && <button className="button button-primary button-large" disabled={busy} onClick={() => void run(action.action)}><action.icon size={18} />{busy ? "Working…" : action.label}</button>}

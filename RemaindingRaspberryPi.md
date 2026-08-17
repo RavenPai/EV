@@ -1,6 +1,6 @@
-# Remaining Raspberry Pi, ESP32, Navigation, and Physical Tasks
+# Remaining Raspberry Pi Prototype and Future Physical Tasks
 
-Updated: 21 July 2026
+Updated: 17 August 2026
 
 This file contains only robot-side installation, configuration, commissioning,
 and physical validation that remains. Source-code work and cloud/dashboard
@@ -11,6 +11,82 @@ A task remains here if any required checkbox or pass-evidence item is missing.
 Move only the exact verified Pi task title, with dated redacted evidence, to
 `DoneRaspberrypi.md`. Laptop/cloud work stays in `Remainding.md`, and source
 implementation or unit tests alone never complete deployment or hardware gates.
+
+## Active prototype scope — delivery display and manual acknowledgement
+
+The current prototype no longer requires navigation, ROS, ESP32 control, motor
+control, or physical delivery execution. Its Raspberry Pi completion target is:
+
+```text
+receive delivery through EMQX -> display it locally -> operator acknowledges
+-> publish ACK through EMQX -> show acknowledged state in the frontend
+```
+
+For this prototype, complete only Steps DP1-DP3 below. The later ESP32,
+navigation, physical-safety, and autonomous-delivery phases remain useful as a
+future roadmap, but they are **deferred and are not prototype blockers**.
+
+Detailed installation and test commands are in
+[robot-pi/DELIVERY_DISPLAY.md](robot-pi/DELIVERY_DISPLAY.md).
+
+### Step DP1 — Complete and verify the display bundle
+
+- [x] Run the delivery-display and shared message-contract tests successfully.
+- [x] Run the complete existing Raspberry Pi test suite to catch regressions.
+- [x] Confirm the display accepts only `START_MISSION` delivery snapshots for
+  its configured robot.
+- [x] Confirm receiving a command does not automatically publish the
+  application acknowledgement.
+- [x] Confirm one operator button press creates one durable `COMPLETED` command
+  receipt and repeated presses cannot create another. The frontend labels this
+  terminal receipt as an acknowledgment; it is not physical completion.
+- [x] Confirm the display code imports no serial, GPIO, motor, navigation, or
+  ROS library.
+
+Pass evidence: all Pi tests pass, the display renders escaped delivery data,
+and its automated tests prove durable receive/manual-ACK behavior.
+
+### Step DP2 — Install the display-only service on the Pi
+
+- [ ] Copy the reviewed display bundle to a temporary staging directory on the
+  Pi without copying credentials.
+- [ ] Run `robot-pi/install_delivery_display.sh` interactively with `sudo`.
+- [ ] Confirm `/etc/miit-rover/robot.env` was reused unchanged.
+- [ ] Confirm `miit-rover-agent.service` is disabled/inactive and
+  `miit-delivery-display.service` is enabled/active. Never run both with the
+  same MQTT client identity.
+- [ ] Confirm `http://127.0.0.1:8080/health` reports HTTP, MQTT, and subscription
+  readiness.
+- [ ] Open `http://127.0.0.1:8080/` in Firefox on the Pi.
+
+Pass evidence: the installer completes without rollback, the display survives
+a controlled restart, exactly one robot MQTT consumer is active, and no secret
+was printed or added to the repository.
+
+### Step DP3 — Verify the end-to-end manual acknowledgement
+
+- [ ] Deploy the matching Supabase and frontend bundle before the controlled
+  test so the expanded delivery snapshot and realtime acknowledgement UI use
+  the same contract as the Pi.
+- [ ] Create, approve, and assign a fresh test delivery to the configured Pi
+  robot.
+- [ ] Press **Send to Raspberry Pi** once and confirm the correct delivery details appear
+  on the Pi without an automatic application acknowledgement.
+- [ ] Confirm the frontend shows that it is waiting for robot acknowledgement.
+- [ ] Press **Acknowledge** once on the Pi.
+- [ ] Confirm EMQX forwards the ACK to `ingest-robot-message`, the matching
+  `robot_commands` row becomes `COMPLETED`, and the frontend presents it as
+  **Acknowledged by Raspberry Pi**.
+- [ ] Refresh both pages and confirm the persisted acknowledged state remains.
+- [ ] Confirm no physical delivery status, arrival, cargo, return, or completion
+  event was fabricated.
+
+Pass evidence: one redacted delivery/command ID links the frontend dispatch,
+Pi display, Pi button press, EMQX ACK, Supabase command status, and frontend
+realtime update.
+
+After DP3 passes, record the completed display-only milestone in
+`DoneRaspberrypi.md`. Do not mark the deferred physical phases complete.
 
 The historical setup guide is used only as a phase/step index. Its old
 `pi-agent-1.1.0`, single `mission_request.json`, Ubuntu 24.04/Jazzy, and

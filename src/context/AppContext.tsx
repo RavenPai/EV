@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { initialDeliveries, initialNotifications, initialRobots } from "../data/demo";
 import { createId } from "../lib/id";
 import { cloudEnabled, supabase } from "../lib/supabase";
-import type { Delivery, DeliveryStatus, NewDeliveryInput, NotificationItem, Robot, UserRole } from "../types";
+import type { Delivery, DeliveryStatus, MissionCommand, NewDeliveryInput, NotificationItem, Robot, UserRole } from "../types";
 
 type Toast = { id: string; message: string; tone: "success" | "warning" | "danger" };
 
@@ -11,6 +11,7 @@ interface AppContextValue {
   setRole: (role: UserRole) => void;
   deliveries: Delivery[];
   robots: Robot[];
+  missionCommandsByDelivery: Record<string, MissionCommand>;
   notifications: NotificationItem[];
   toast?: Toast;
   dismissToast: () => void;
@@ -82,10 +83,27 @@ const mapCloudNotification = (row: Record<string, unknown>): NotificationItem =>
   };
 };
 
+const mapCloudMissionCommand = (row: Record<string, unknown>): MissionCommand => {
+  const result = row.result && typeof row.result === "object" && !Array.isArray(row.result)
+    ? row.result as Record<string, unknown>
+    : undefined;
+  return {
+    id: String(row.id),
+    deliveryId: String(row.delivery_id),
+    robotId: String(row.robot_id),
+    status: row.status as MissionCommand["status"],
+    issuedAt: String(row.issued_at),
+    publishedAt: row.published_at ? String(row.published_at) : undefined,
+    acknowledgedAt: row.acknowledged_at ? String(row.acknowledged_at) : undefined,
+    reason: result?.reason ? String(result.reason) : undefined,
+  };
+};
+
 export function AppProvider({ children }: { children: ReactNode }) {
   const [role, setRole] = useState<UserRole>("ADMIN");
   const [deliveries, setDeliveries] = useState<Delivery[]>(() => readLocal(DELIVERY_KEY, initialDeliveries));
   const [robots, setRobots] = useState<Robot[]>(() => readLocal(ROBOT_KEY, initialRobots));
+  const [missionCommandsByDelivery, setMissionCommandsByDelivery] = useState<Record<string, MissionCommand>>({});
   const [notifications, setNotifications] = useState<NotificationItem[]>(() => cloudEnabled ? [] : initialNotifications);
   const [toast, setToast] = useState<Toast>();
 
@@ -104,6 +122,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       { data: deliveryRows, error: deliveryError },
       { data: robotRows, error: robotError },
       { data: notificationRows, error: notificationError },
+      { data: commandRows, error: commandError },
     ] = await Promise.all([
       supabase.from("deliveries").select("*").order("created_at", { ascending: false }),
       supabase.from("robots").select("*").order("name"),
@@ -112,11 +131,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
         .select("id, title, message, type, created_at, read_at")
         .order("created_at", { ascending: false })
         .limit(50),
+      supabase
+        .from("robot_commands")
+        .select("id, robot_id, delivery_id, status, issued_at, published_at, acknowledged_at, result")
+        .eq("command_type", "START_MISSION")
+        .not("delivery_id", "is", null)
+        .order("issued_at", { ascending: false }),
     ]);
     if (deliveryRows) setDeliveries(deliveryRows.map((row) => mapCloudDelivery(row)));
     if (robotRows) setRobots(robotRows.map((row) => mapCloudRobot(row)));
     if (notificationRows) setNotifications(notificationRows.map((row) => mapCloudNotification(row)));
-    if (deliveryError || robotError || notificationError) {
+    if (commandRows) {
+      const latestByDelivery: Record<string, MissionCommand> = {};
+      commandRows.forEach((row) => {
+        const command = mapCloudMissionCommand(row);
+        if (!latestByDelivery[command.deliveryId]) latestByDelivery[command.deliveryId] = command;
+      });
+      setMissionCommandsByDelivery(latestByDelivery);
+    }
+    if (deliveryError || robotError || notificationError || commandError) {
       showToast("Cloud data could not be loaded. Check RLS and environment settings.", "warning");
     }
   }, [showToast]);
@@ -130,6 +163,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       .on("postgres_changes", { event: "*", schema: "public", table: "deliveries" }, refreshCloud)
       .on("postgres_changes", { event: "*", schema: "public", table: "robots" }, refreshCloud)
       .on("postgres_changes", { event: "*", schema: "public", table: "notifications" }, refreshCloud)
+      .on("postgres_changes", { event: "*", schema: "public", table: "robot_commands" }, refreshCloud)
       .subscribe();
     return () => { void client.removeChannel(channel); };
   }, [refreshCloud]);
@@ -225,10 +259,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const dispatchDelivery = async (id: string) => {
     if (cloudEnabled && supabase) {
-      const { error } = await supabase.functions.invoke("dispatch-delivery", { body: { deliveryId: id } });
+      const { error } = await supabase.functions.invoke("dispatch-delivery", {
+        body: { deliveryId: id, acknowledgementOnly: true },
+      });
       if (error) throw error;
       await refreshCloud();
-      showToast("Mission command published. Waiting for the robot to start.");
+      showToast("Delivery information sent. Waiting for Raspberry Pi acknowledgment.");
       return;
     }
     const delivery = deliveries.find((item) => item.id === id);
@@ -304,10 +340,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const value = useMemo<AppContextValue>(() => ({
-    role, setRole, deliveries, robots, notifications, toast, dismissToast: () => setToast(undefined),
+    role, setRole, deliveries, robots, missionCommandsByDelivery, notifications, toast, dismissToast: () => setToast(undefined),
     createDelivery, approveDelivery, assignDelivery, dispatchDelivery, cancelDelivery, advanceDelivery,
     sendRobotCommand, markNotificationsRead, resetDemo,
-  }), [role, deliveries, robots, notifications, toast, markNotificationsRead]);
+  }), [role, deliveries, robots, missionCommandsByDelivery, notifications, toast, markNotificationsRead]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

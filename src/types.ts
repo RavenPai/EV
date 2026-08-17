@@ -19,6 +19,15 @@ export type DeliveryStatus =
 
 export type RobotStatus = "ONLINE" | "BUSY" | "CHARGING" | "OFFLINE" | "FAULT";
 export type RobotMode = "IDLE" | "AUTO" | "MANUAL" | "PAUSED" | "ESTOP" | "FAULT";
+export type RobotCommandStatus =
+  | "PENDING"
+  | "PUBLISH_UNKNOWN"
+  | "PUBLISHED"
+  | "ACKNOWLEDGED"
+  | "REJECTED"
+  | "COMPLETED"
+  | "FAILED"
+  | "EXPIRED";
 
 export interface CampusLocation {
   id: string;
@@ -71,6 +80,17 @@ export interface Robot {
   camera: "OK" | "WARNING" | "OFFLINE";
   esp32: "OK" | "WARNING" | "OFFLINE";
   motorTempC: number;
+}
+
+export interface MissionCommand {
+  id: string;
+  deliveryId: string;
+  robotId: string;
+  status: RobotCommandStatus;
+  issuedAt: string;
+  publishedAt?: string;
+  acknowledgedAt?: string;
+  reason?: string;
 }
 
 export interface NotificationItem {

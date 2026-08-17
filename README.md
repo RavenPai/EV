@@ -1,6 +1,15 @@
 # MIIT Rover — Campus Delivery Application
 
-A working React + TypeScript MVP for the MIIT autonomous EV delivery project. It runs immediately with safe demo data and includes the Supabase database, Edge Function, MQTT command contract, and Raspberry Pi bridge needed for the cloud-connected version.
+A working React + TypeScript MVP for the MIIT EV delivery project. It runs
+immediately with safe demo data and includes the Supabase database, Edge
+Function, MQTT command contract, and Raspberry Pi software needed for the
+cloud-connected version.
+
+The active prototype is display-only: the frontend sends delivery information
+through Supabase and EMQX, the Raspberry Pi shows it in a local web page, and a
+local **Acknowledge** button sends a receipt back to the frontend through EMQX
+and Supabase Realtime. It requires no ROS, ESP32, navigation, or motor control.
+See [`robot-pi/DELIVERY_DISPLAY.md`](robot-pi/DELIVERY_DISPLAY.md).
 
 ## What is included
 

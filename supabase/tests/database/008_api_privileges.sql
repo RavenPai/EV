@@ -3,7 +3,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions;
 
-select plan(14);
+select plan(16);
 
 select ok(
   has_schema_privilege('service_role', 'public', 'USAGE'),
@@ -102,6 +102,7 @@ select ok(
 with required(table_name, privilege_name) as (
   values
     ('public.profiles', 'SELECT'),
+    ('public.locations', 'SELECT'),
     ('public.robots', 'SELECT'),
     ('public.deliveries', 'SELECT'),
     ('public.robot_commands', 'SELECT'),
@@ -232,6 +233,32 @@ select is(
   ),
   0,
   'no browser RLS policy permits ingestion-table mutation'
+);
+
+select is(
+  (
+    select count(*)::integer
+    from pg_catalog.pg_policies
+    where schemaname = 'public'
+      and tablename = 'robot_commands'
+      and policyname = 'staff read commands'
+      and cmd = 'SELECT'
+      and roles @> array['authenticated']::name[]
+  ),
+  1,
+  'staff command acknowledgement visibility remains protected by RLS'
+);
+
+select is(
+  (
+    select count(*)::integer
+    from pg_catalog.pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'robot_commands'
+  ),
+  1,
+  'robot command acknowledgement changes are published to Supabase Realtime'
 );
 
 select * from finish();

@@ -13,12 +13,15 @@ const mocks = vi.hoisted(() => ({
   notificationSelect: vi.fn(),
   notificationRowsOrder: vi.fn(),
   notificationRowsLimit: vi.fn(),
+  commandSelect: vi.fn(),
+  commandRowsOrder: vi.fn(),
   deliveryInsert: vi.fn(),
   deliveryInsertSingle: vi.fn(),
   rpc: vi.fn(),
   channelOn: vi.fn(),
   channelSubscribe: vi.fn(),
   removeChannel: vi.fn(),
+  functionInvoke: vi.fn(),
 }));
 
 vi.mock("../lib/supabase", () => {
@@ -70,8 +73,21 @@ vi.mock("../lib/supabase", () => {
             },
           };
         }
+        if (table === "robot_commands") {
+          return {
+            select: (columns: string) => {
+              mocks.commandSelect(columns);
+              return {
+                eq: () => ({
+                  not: () => ({ order: mocks.commandRowsOrder }),
+                }),
+              };
+            },
+          };
+        }
         throw new Error(`Unexpected Supabase table: ${table}`);
       },
+      functions: { invoke: mocks.functionInvoke },
       rpc: mocks.rpc,
       channel: () => channel,
       removeChannel: mocks.removeChannel,
@@ -136,6 +152,18 @@ function NotificationsHarness() {
   );
 }
 
+function MissionCommandHarness() {
+  const { missionCommandsByDelivery, dispatchDelivery } = useApp();
+  const command = missionCommandsByDelivery["delivery-123"];
+  return (
+    <>
+      <output data-testid="mission-status">{command?.status ?? "none"}</output>
+      <output data-testid="mission-reason">{command?.reason ?? "none"}</output>
+      <button onClick={() => void dispatchDelivery("delivery-123")}>Send to Pi</button>
+    </>
+  );
+}
+
 describe("cloud delivery requester identity", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -151,6 +179,8 @@ describe("cloud delivery requester identity", () => {
     mocks.deliveryRowsOrder.mockResolvedValue({ data: [], error: null });
     mocks.robotRowsOrder.mockResolvedValue({ data: [], error: null });
     mocks.notificationRowsLimit.mockResolvedValue({ data: [], error: null });
+    mocks.commandRowsOrder.mockResolvedValue({ data: [], error: null });
+    mocks.functionInvoke.mockResolvedValue({ data: {}, error: null });
     mocks.rpc.mockResolvedValue({ data: null, error: null });
     mocks.deliveryInsertSingle.mockResolvedValue({
       data: { id: "delivery-123", tracking_code: "MIIT-2001" },
@@ -199,6 +229,8 @@ describe("cloud database notifications", () => {
     mocks.deliveryRowsOrder.mockResolvedValue({ data: [], error: null });
     mocks.robotRowsOrder.mockResolvedValue({ data: [], error: null });
     mocks.notificationRowsLimit.mockResolvedValue({ data: [], error: null });
+    mocks.commandRowsOrder.mockResolvedValue({ data: [], error: null });
+    mocks.functionInvoke.mockResolvedValue({ data: {}, error: null });
     mocks.rpc.mockResolvedValue({ data: null, error: null });
   });
 
@@ -272,5 +304,63 @@ describe("cloud database notifications", () => {
 
     await waitFor(() => expect(mocks.rpc).toHaveBeenCalledWith("mark_notifications_read"));
     expect(notification.getAttribute("data-read")).toBe("true");
+  });
+});
+
+describe("cloud Raspberry Pi delivery acknowledgments", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getUser.mockResolvedValue({
+      data: { user: { id: "staff-123", email: "operator@miit.edu.mm" } },
+      error: null,
+    });
+    mocks.profileRoleSingle.mockResolvedValue({ data: { role: "OPERATOR" }, error: null });
+    mocks.deliveryRowsOrder.mockResolvedValue({ data: [], error: null });
+    mocks.robotRowsOrder.mockResolvedValue({ data: [], error: null });
+    mocks.notificationRowsLimit.mockResolvedValue({ data: [], error: null });
+    mocks.commandRowsOrder.mockResolvedValue({ data: [], error: null });
+    mocks.functionInvoke.mockResolvedValue({ data: {}, error: null });
+    mocks.rpc.mockResolvedValue({ data: null, error: null });
+  });
+
+  it("maps the latest command receipt and subscribes to command changes", async () => {
+    mocks.commandRowsOrder.mockResolvedValueOnce({
+      data: [{
+        id: "command-123",
+        robot_id: "robot-01",
+        delivery_id: "delivery-123",
+        status: "COMPLETED",
+        issued_at: "2026-08-17T07:00:00.000Z",
+        published_at: "2026-08-17T07:00:01.000Z",
+        acknowledged_at: "2026-08-17T07:01:00.000Z",
+        result: { reason: "Delivery information acknowledged on Raspberry Pi display" },
+      }],
+      error: null,
+    });
+
+    render(<AppProvider><MissionCommandHarness /></AppProvider>);
+
+    expect(await screen.findByText("COMPLETED")).toBeTruthy();
+    expect(screen.getByText("Delivery information acknowledged on Raspberry Pi display")).toBeTruthy();
+    expect(mocks.commandSelect).toHaveBeenCalledWith(
+      "id, robot_id, delivery_id, status, issued_at, published_at, acknowledged_at, result",
+    );
+    expect(mocks.channelOn).toHaveBeenCalledWith(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "robot_commands" },
+      expect.any(Function),
+    );
+  });
+
+  it("requests the acknowledgment-only Raspberry Pi command", async () => {
+    const user = userEvent.setup();
+    render(<AppProvider><MissionCommandHarness /></AppProvider>);
+
+    await user.click(screen.getByRole("button", { name: "Send to Pi" }));
+
+    await waitFor(() => expect(mocks.functionInvoke).toHaveBeenCalledWith(
+      "dispatch-delivery",
+      { body: { deliveryId: "delivery-123", acknowledgementOnly: true } },
+    ));
   });
 });

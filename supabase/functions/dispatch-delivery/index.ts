@@ -1,4 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { buildAcknowledgementOnlyDeliveryPayload } from "./delivery-payload.js";
 import { classifyEmqxPublishStatus } from "./publish-response.js";
 
 const corsHeaders = {
@@ -76,6 +77,7 @@ Deno.serve(async (request) => {
       const { data: delivery, error } = await admin.from("deliveries").select("*").eq("id", body.deliveryId).single();
       if (error || !delivery) return json({ error: "Delivery not found" }, 404);
       if (delivery.status !== "ASSIGNED" || !delivery.robot_id) return json({ error: "Delivery must be assigned before dispatch" }, 409);
+      const acknowledgementOnly = body.acknowledgementOnly === true;
 
       const { data: activeCommand, error: activeCommandError } = await admin
         .from("robot_commands")
@@ -107,17 +109,25 @@ Deno.serve(async (request) => {
         new Date(robot.telemetry_received_at).getTime() >= freshnessCutoff;
       const sensorsReady = [robot.lidar, robot.camera, robot.esp32]
         .every((value) => value === "OK");
-      if (
-        robot.status !== "ONLINE" ||
-        robot.mode !== "IDLE" ||
-        robot.current_delivery_id !== null ||
-        Number(robot.speed_mps) !== 0 ||
-        robot.battery < 20 ||
-        !bridgeFresh ||
-        !telemetryFresh ||
-        !sensorsReady
-      ) {
-        return json({ error: "Assigned robot is not ready with fresh telemetry" }, 409);
+      const displayReady = acknowledgementOnly &&
+        robot.mode === "IDLE" &&
+        robot.current_delivery_id === null &&
+        bridgeFresh;
+      const roverReady = !acknowledgementOnly &&
+        robot.status === "ONLINE" &&
+        robot.mode === "IDLE" &&
+        robot.current_delivery_id === null &&
+        Number(robot.speed_mps) === 0 &&
+        robot.battery >= 20 &&
+        bridgeFresh &&
+        telemetryFresh &&
+        sensorsReady;
+      if (!displayReady && !roverReady) {
+        return json({
+          error: acknowledgementOnly
+            ? "The Raspberry Pi delivery display is not connected and ready"
+            : "Assigned robot is not ready with fresh telemetry",
+        }, 409);
       }
 
       const { data: robotCommand, error: robotCommandError } = await admin
@@ -156,12 +166,27 @@ Deno.serve(async (request) => {
         }, 409);
       }
 
-      payload = {
-        sourceLocationId: delivery.source_id,
-        destinationLocationId: delivery.destination_id,
-        mapVersion: "miit-campus-v1",
-        deliveryId: delivery.id,
-      };
+      if (acknowledgementOnly) {
+        const { data: locationRows, error: locationError } = await admin
+          .from("locations")
+          .select("id, name")
+          .in("id", [delivery.source_id, delivery.destination_id]);
+        if (locationError) throw locationError;
+        const sourceLocation = (locationRows ?? []).find((row) => row.id === delivery.source_id);
+        const destinationLocation = (locationRows ?? []).find((row) => row.id === delivery.destination_id);
+        payload = buildAcknowledgementOnlyDeliveryPayload(
+          delivery,
+          sourceLocation,
+          destinationLocation,
+        );
+      } else {
+        payload = {
+          sourceLocationId: delivery.source_id,
+          destinationLocationId: delivery.destination_id,
+          mapVersion: "miit-campus-v1",
+          deliveryId: delivery.id,
+        };
+      }
     } else if (body.robotId && body.command) {
       robotId = String(body.robotId);
       commandType = String(body.command);
@@ -236,7 +261,13 @@ Deno.serve(async (request) => {
 
     const commandId = crypto.randomUUID();
     const issuedAt = new Date();
-    const expiresAt = new Date(issuedAt.getTime() + (commandType === "ESTOP" ? 60_000 : 5 * 60_000));
+    const expiresAt = new Date(issuedAt.getTime() + (
+      commandType === "ESTOP"
+        ? 60_000
+        : commandType === "START_MISSION" && body.acknowledgementOnly === true
+        ? 60 * 60_000
+        : 5 * 60_000
+    ));
     const envelope = {
       schemaVersion: 1,
       commandId,

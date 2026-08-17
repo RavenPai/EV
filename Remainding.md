@@ -1,6 +1,6 @@
 # Remaining Laptop, EV-Folder, and Cloud Tasks
 
-Updated: 24 July 2026
+Updated: 17 August 2026
 
 This file contains only work that remains on the development laptop, in the
 EV repository, or in the Supabase, EMQX, GitHub, and Cloudflare consoles.
@@ -15,6 +15,31 @@ deployment or hardware gate.
 
 Never paste passwords, API secrets, private addresses, private keys, or exact
 device identifiers into this file, Git, screenshots, SQL results, or logs.
+
+## Current display-only prototype release track
+
+This track is the active prototype scope. It supersedes the autonomous rover
+release gates for the present demonstration; Steps L11-L21 and the physical
+navigation/ESP32 phases remain a deferred roadmap, not blockers.
+
+- [x] **DP-L1 — Implement and test the contract.** The Edge Function publishes
+  a human-readable delivery snapshot, the standalone Pi service stores and
+  displays it without navigation, and its button publishes one idempotent
+  terminal receipt. The full Pi suite passed 59 tests, the frontend suite
+  passed 20 tests, TypeScript and the production build passed, and the EMQX
+  payload tests passed.
+- [x] **DP-L2 — Deploy the cloud changes.** Hosted migration `012` grants the
+  location read required by the Edge Function and publishes `robot_commands`
+  through Realtime. The updated `dispatch-delivery` function and Cloudflare
+  Worker version `1fde8d4f-ac88-4f4a-9875-ed178d591826` are deployed.
+- [ ] **DP-L3 — Complete the Pi installation.** The reviewed bundle is staged
+  on the Pi and passed 29 tests there. Run the one interactive `sudo` installer
+  command in `robot-pi/DELIVERY_DISPLAY.md`, then verify the service and local
+  Firefox page. This remains a Pi-side gate in `RemaindingRaspberryPi.md`.
+- [ ] **DP-L4 — Capture one end-to-end receipt.** Assign a fresh delivery to
+  the Pi's configured robot, press **Send to Raspberry Pi**, verify the card,
+  press **Acknowledge**, and verify the frontend changes to **Acknowledged by
+  Raspberry Pi** without a physical mission event.
 
 ## Current starting point
 
