@@ -1,6 +1,16 @@
 
 project_id = "miit-rover-integration"
 
+# Keep the isolated local stack outside Windows/Hyper-V excluded ranges that
+# commonly cover Supabase's defaults (54321/54322). These settings affect only
+# `supabase start`/local integration tests, never the hosted project.
+[api]
+port = 64321
+
+[db]
+port = 64322
+shadow_port = 64320
+
 [functions.ingest-robot-message]
 enabled = true
 verify_jwt = false

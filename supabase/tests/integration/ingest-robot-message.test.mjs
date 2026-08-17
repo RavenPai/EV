@@ -586,26 +586,49 @@ test(
 
     try {
       robotSnapshot = await readRobot();
-      requireData(
+      const readinessAt = new Date().toISOString();
+      const readyRobot = requireData(
         await admin
           .from("robots")
           .update({
             status: "ONLINE",
             mode: "IDLE",
             current_delivery_id: null,
+            battery: 90,
+            signal: 95,
             speed_mps: 0,
-            telemetry_at: new Date().toISOString(),
-            telemetry_received_at: new Date().toISOString(),
-            bridge_last_seen: new Date().toISOString(),
+            lidar: "OK",
+            camera: "OK",
+            esp32: "OK",
+            telemetry_at: readinessAt,
+            telemetry_received_at: readinessAt,
+            bridge_last_seen: readinessAt,
             bridge_online: true,
             control_event_at: null,
             control_event_received_at: null,
             safety_latched_at: null,
-            last_seen: new Date().toISOString(),
+            last_seen: readinessAt,
           })
-          .eq("id", TEST_ROBOT_ID),
+          .eq("id", TEST_ROBOT_ID)
+          .select(
+            "status, mode, current_delivery_id, battery, signal, speed_mps, " +
+              "lidar, camera, esp32, telemetry_received_at, bridge_last_seen, " +
+              "bridge_online",
+          )
+          .single(),
         "prepare test robot",
       );
+      assert.equal(readyRobot.status, "ONLINE");
+      assert.equal(readyRobot.mode, "IDLE");
+      assert.equal(readyRobot.current_delivery_id, null);
+      assert.ok(Number(readyRobot.battery) >= 20);
+      assert.equal(Number(readyRobot.speed_mps), 0);
+      assert.equal(readyRobot.lidar, "OK");
+      assert.equal(readyRobot.camera, "OK");
+      assert.equal(readyRobot.esp32, "OK");
+      assert.equal(readyRobot.bridge_online, true);
+      assert.ok(new Date(readyRobot.telemetry_received_at).getTime() > 0);
+      assert.ok(new Date(readyRobot.bridge_last_seen).getTime() > 0);
 
       const email = `emqx-ingest-${randomUUID()}@example.test`;
       const password = `Integration-${randomUUID()}-A1!`;
