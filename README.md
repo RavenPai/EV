@@ -201,15 +201,16 @@ the local integration suite on every pull request and push to `main`.
 Current audit status: the completed 21 July local gate included the Docker-backed
 pgTAP/Edge Function suite, and migrations `010`/`011` plus both Edge Functions
 are now deployed. The current fast gate also passes locally without production
-credentials (15 frontend tests, 33 Pi tests, 4 ESP32 protocol tests, TypeScript,
-Vite build, and the EMQX publish-response test). The local webhook-contract test
-requires Docker Desktop's Linux engine to be running; its current unavailability
-is an environment prerequisite, not a source failure. The isolated broker
-response probe has passed (HTTP 200 with a non-physical subscriber and HTTP 202
-after it stopped). A live isolated application dispatch also passed through the
-real EMQX action: the delivery became `DISPATCHED`, and the simulator ACK changed
-the command to `ACKNOWLEDGED`. Event-driven delivery progression and the secure
-EMQX action configuration remain required before operation.
+credentials (15 frontend tests, 44 Pi tests, 4 ESP32 protocol tests, TypeScript,
+Vite build, and the EMQX publish-response test). The Docker-backed integration
+gate passes 191 pgTAP database checks and 17 HTTP webhook-contract subtests,
+including malformed input, unsupported-topic, and conflicting-replay cases.
+The isolated broker response probe has passed (HTTP 200 with a non-physical
+subscriber and HTTP 202 after it stopped). A live isolated application dispatch
+also passed through the real EMQX action: the delivery became `DISPATCHED`, and
+the simulator ACK changed the command to `ACKNOWLEDGED`. Live event-driven
+delivery progression and rotation of the exposed Deployment API credential
+remain required before operation.
 
 The local Docker namespace is intentionally fixed as
 `miit-rover-integration`. If that local stack is already running, the test
@@ -337,11 +338,26 @@ action. A real authenticated dispatch became `DISPATCHED`, and its command
 became `ACKNOWLEDGED` after the simulated ACK. None of these tests used the
 physical robot.
 
+After the active credential was later shared during setup, a second rotation
+was performed. The newly stored Supabase credential returned HTTP 200 for an
+authenticated client lookup and HTTP 202 `no_matching_subscribers` for a random
+non-robot QoS 1, non-retained publish. The short-lived verification function
+and token were removed immediately. The superseded EMQX key must now be revoked.
+
 This is not a production acceptance result yet. The EMQX return path now has a
 verified HTTPS connector, the protected ingestion action, ordered buffering and
 retries, stable metrics, and live presence/state/ACK/event evidence.
-Event-driven delivery progression and the remaining isolated invalid/replay
-matrix still need L9 evidence. The corrected client and All Users
+The invalid/replay matrix now passes in the disposable local stack, and a
+rollback-only hosted database regression proves authenticated setup, ordering,
+idempotency, conflicting replay, and impossible-transition behavior without
+leaving rows. A fresh guarded L9 run has also passed through the real MQTT
+action: the command became `ACKNOWLEDGED`, exactly one deterministic
+`MISSION_STARTED` advanced its delivery to `TO_SOURCE` at progress 28, the
+robot/delivery linkage and database-backed notifications were present, and the
+runner's retained offline shutdown arrived. Only temporary-resource cleanup
+remains for L9. The database fixtures and temporary Pi operator files have now
+been removed; only deletion of the temporary EMQX test authentication and
+Client-ID authorization entries remains. The corrected client and All Users
 authorization rules pass the safe regression: the test client's own
 subscription succeeds, while physical cross-robot and wildcard command
 subscriptions and an unowned command publication are denied. See
@@ -392,6 +408,35 @@ connector, ordered asynchronous action settings, and stable post-maintenance
 metrics were then tested successfully. The unused unverified connector was
 deleted.
 
+For the remaining live L9 lifecycle check,
+`robot-pi/l9_workflow_simulator.py` is hard-locked to `robot-test-l6`. It
+publishes fresh non-physical readiness, waits for exactly one QoS 1,
+non-retained `START_MISSION`, ACKs it, and immediately publishes the linked
+`MISSION_STARTED` event. Start it before creating the fresh dispatch:
+
+```bash
+L9_MQTT_HOST=...
+L9_MQTT_USERNAME=robot-test-l6
+L9_MQTT_PASSWORD=...
+L9_MQTT_CLIENT_ID=robot-test-l6-subscriber
+python robot-pi/l9_workflow_simulator.py \
+  --expected-delivery-id <FRESH_ASSIGNED_TEST_DELIVERY_UUID> \
+  --duration 900
+```
+
+The MQTT password must be supplied through the environment, never a command
+argument or committed file. Run `--self-test` first. The lower-level
+`l9_lifecycle_probe.py` remains available for an explicitly identified one-shot
+event or exact replay; repeating an event is safe only when `eventId`, `at`,
+severity, and payload are all identical. Never reuse an expired command or
+backdate an event. Do not run the L6 simulator and L9 workflow runner together:
+they intentionally use the same exact authorized test Client ID.
+
+On the commissioned Pi, `run_l9_operator.sh <delivery-uuid>` prompts without
+echo for the broker host and test MQTT password, exports them only to the
+one-run Python process, and does not write either value to disk or shell
+history.
+
 ## Cloudflare Workers frontend deployment
 
 The checked-in `wrangler.jsonc` deploys the static Vite output as Cloudflare
@@ -418,9 +463,9 @@ The remaining work is split by execution location:
   ESP32 commissioning, navigation, physical safety, and supervised testing.
 
 The immediate cloud-release gates are the remaining L6, L9, and L10 items in
-`Remainding.md`: rotate the active Deployment API credential that was shared
-during setup, finish the isolated event-driven/invalid-case matrix, delete
-temporary test resources after retaining redacted evidence, and
+`Remainding.md`: revoke the superseded Deployment API credential after its
+replacement passed verification, delete temporary L9 test resources after
+retaining redacted evidence, and
 deploy/smoke-test the updated frontend. L7 ingestion and L8 default-deny
 authorization are complete and must be preserved. After those gates, the next
 application safeguards are:

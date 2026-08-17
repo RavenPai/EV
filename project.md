@@ -1541,6 +1541,12 @@ EV/
 | `robot-pi/test_l6_simulator.py` | Hardware-free safety and message-contract tests for the L6 simulator |
 | `robot-pi/l7_event_probe.py` | One-shot, non-mission `robot-test-l6` event probe for the hosted HTTP action |
 | `robot-pi/test_l7_event_probe.py` | Hardware-free identity and no-delivery-side-effect tests for the L7 probe |
+| `robot-pi/l9_lifecycle_probe.py` | One-shot, non-retained `robot-test-l6` mission-event publisher with hard identity guards |
+| `robot-pi/test_l9_lifecycle_probe.py` | Hardware-free tests for L9 identity, event type, replay, and credential guards |
+| `robot-pi/l9_workflow_simulator.py` | Non-physical readiness/command/ACK/`MISSION_STARTED` runner hard-locked to `robot-test-l6` |
+| `robot-pi/test_l9_workflow_simulator.py` | Hardware-free linked-message and delivery-link tests for the L9 workflow runner |
+| `robot-pi/run_l9_operator.sh` | Interactive no-echo wrapper for passing the temporary L9 MQTT host/password to the Pi runner without storing them |
+| `supabase/functions/verify-emqx-credentials/index.ts` | Short-lived, token-protected server-side L6 credential verification utility |
 | `robot-pi/robot.env.example` | Secret-free production environment template |
 | `MIIT_Rover_Raspberry_Pi_Ubuntu_Setup_Guide.md` | Preserved historical guide used only as a phase/step reference; its old agent and ROS commands require current validation |
 | `robot-pi/miit-rover-agent.service` | Hardened systemd unit with network/time ordering and automatic restart |
@@ -2266,6 +2272,13 @@ restricted to authenticated users.
 EMQX Deployment API verification now includes a full isolated application
 dispatch, but not a physical delivery test:
 
+- Before the second credential rotation, a short-lived protected verification
+  function established a clean baseline. After the operator created the new key
+  and updated the two Supabase EMQX API secrets, the same isolated check passed
+  again: HTTP 200 for client lookup and HTTP 202
+  `no_matching_subscribers` for a random QoS 1, non-retained test publish. The
+  temporary function and probe token were removed. Delete the superseded key
+  only now that the replacement is verified.
 - A replacement Deployment API credential is active in Supabase. An
   authenticated clients probe returned HTTP 200. A safe non-physical publish
   returned HTTP 200 while an isolated test subscriber was connected, then
@@ -2320,16 +2333,30 @@ verified connector, rule, and action remained active. This closes L7.
 
 Earlier in the L7 verification, the ingestion secret exposed during the
 console review was rotated in both Supabase and the EMQX action. A new,
-uniquely identified
-non-physical event reached `robot_events` after rotation, proving that the two
-replacement values match without reading or recording the secret.
+uniquely identified non-physical event reached `robot_events` after rotation,
+proving that the two replacement values match without reading or recording the
+secret.
 
 The isolated authenticated delivery transaction now has live evidence for
 HTTP 200/delivered and ACK ingestion, while the earlier stopped-subscriber
 probe records HTTP 202/no-subscriber. Timeout/5xx classification is covered by
-automated tests. A controlled event, invalid/replay cases, and cleanup remain.
-Delete the temporary robot, credentials, and deliveries after retaining
-redacted evidence.
+automated tests. The disposable local stack now passes 191 pgTAP assertions and
+17 HTTP ingestion subtests, including malformed JSON, unsupported topic,
+invalid ordering, exact replay, and conflicting replay. A rollback-only hosted
+transaction also passed authenticated setup, `MISSION_STARTED`, exact replay,
+conflicting replay, and impossible-transition checks without leaving test rows.
+A fresh guarded live run then passed through the real MQTT rule/action. The
+exact test command became `ACKNOWLEDGED`; exactly one deterministic
+`MISSION_STARTED` advanced the delivery to `TO_SOURCE` at progress 28; the
+robot/current-delivery link and database-backed notifications were present; and
+the retained offline shutdown arrived after the runner exited. The earlier
+abandoned non-physical command was explicitly reconciled to `FAILED` with an
+audit event before this run. L9 now needs only temporary database and EMQX test
+resource cleanup. The temporary database fixtures, matching notifications, Pi
+operator copies, and private test-host file were subsequently removed and
+verified absent. Delete only the test MQTT authentication and Client-ID
+authorization entries in EMQX; retain the production connector, rule, action,
+All Users deny fallback, and physical-robot ACL.
 
 The corrected safe authorization regression now passes. The temporary client's
 own test command subscription was granted; a physical `robot-01` command
@@ -2834,7 +2861,8 @@ linkage, and JSON-object requirements enforced by `ingest-robot-message`.
 `test_local_store.py` covers atomic command/outbox storage and recovery, while
 `test_agent.py` covers command execution ordering, durable ACK handling,
 conflicting replay behavior, and distinct STOP/ESTOP frames. The CI Pi job also
-byte-compiles the bridge sources.
+tests the guarded L6/L7/L9 probes and byte-compiles the bridge sources. The
+current hardware-free Pi suite contains 44 tests.
 
 `npm run test:esp32` runs the firmware package's host-side CRC and JSON framing
 vectors and verifies that motion requires a matching positive acknowledgement.

@@ -2,8 +2,10 @@ node_modules
 dist
 .env
 .env.*
+*.env
 !.env.example
 !**/*.env.example
+!supabase/tests/robot-ingest.test.env
 *.pem
 *.key
 *.crt

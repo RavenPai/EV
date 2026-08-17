@@ -282,13 +282,14 @@ test(
     let authUserId;
     let deliveryId;
     let concurrentDeliveryId;
+    let commandId;
     let robotSnapshot;
     let signedInClient;
     const commandIds = new Set();
     const eventMessageIds = new Set();
 
-    const postAction = async (
-      body,
+    const postRawAction = async (
+      rawBody,
       secret = configuration.ingestSecret,
     ) => {
       const headers = { "Content-Type": "application/json" };
@@ -297,7 +298,7 @@ test(
       const response = await fetch(endpoint, {
         method: "POST",
         headers,
-        body: JSON.stringify(body),
+        body: rawBody,
         signal: AbortSignal.timeout(15_000),
       });
       const text = await response.text();
@@ -309,6 +310,11 @@ test(
       }
       return { response, body: responseBody };
     };
+
+    const postAction = async (
+      body,
+      secret = configuration.ingestSecret,
+    ) => postRawAction(JSON.stringify(body), secret);
 
     const expectStatus = async (body, expectedStatus, secret) => {
       const result = await postAction(body, secret);
@@ -330,6 +336,39 @@ test(
           .single(),
         "read test robot",
       );
+
+    const readMissionMutationSnapshot = async () => {
+      const robot = await readRobot();
+      const delivery = requireData(
+        await admin
+          .from("deliveries")
+          .select("status, progress")
+          .eq("id", deliveryId)
+          .single(),
+        "read delivery mutation snapshot",
+      );
+      const command = requireData(
+        await admin
+          .from("robot_commands")
+          .select("status, acknowledged_at")
+          .eq("id", commandId)
+          .single(),
+        "read command mutation snapshot",
+      );
+
+      return {
+        robot: {
+          status: robot.status,
+          mode: robot.mode,
+          current_delivery_id: robot.current_delivery_id,
+          last_seen: robot.last_seen,
+          control_event_at: robot.control_event_at,
+          control_event_received_at: robot.control_event_received_at,
+        },
+        delivery,
+        command,
+      };
+    };
 
     const cleanup = async () => {
       const errors = [];
@@ -640,7 +679,7 @@ test(
         "assign fixture delivery",
       );
 
-      const commandId = randomUUID();
+      commandId = randomUUID();
       const completionCommandId = randomUUID();
       const otherRobotCommandId = randomUUID();
       const resumeCommandId = randomUUID();
@@ -760,6 +799,68 @@ test(
             400,
           );
           assert.match(wrongQos.error, /QoS 1/i);
+        },
+      );
+
+      await t.test(
+        "rejects unsupported topics without persisting an event",
+        async () => {
+          const unsupportedTopicEventId = randomUUID();
+          eventMessageIds.add(unsupportedTopicEventId);
+          const before = await readMissionMutationSnapshot();
+
+          const response = await expectStatus(
+            {
+              ...actionBody("events", {
+                schemaVersion: 1,
+                eventId: unsupportedTopicEventId,
+                robotId: TEST_ROBOT_ID,
+                deliveryId,
+                commandId,
+                type: "MISSION_STARTED",
+                severity: "INFO",
+                at: new Date().toISOString(),
+                payload: { source: "unsupported-topic-regression" },
+              }),
+              topic: `miit/robots/${TEST_ROBOT_ID}/commands`,
+            },
+            400,
+          );
+          assert.equal(response.error, "Unsupported MQTT topic");
+
+          const eventResult = await admin
+            .from("robot_events")
+            .select("id")
+            .eq("message_id", unsupportedTopicEventId)
+            .maybeSingle();
+          requireData(eventResult, "check unsupported-topic event");
+          assert.equal(eventResult.data, null);
+
+          assert.deepEqual(
+            await readMissionMutationSnapshot(),
+            before,
+          );
+        },
+      );
+
+      await t.test(
+        "rejects malformed request JSON without mutation",
+        async () => {
+          const before = await readMissionMutationSnapshot();
+
+          const result = await postRawAction('{"mqttMessageId":');
+          assert.equal(
+            result.response.status,
+            400,
+            `Expected HTTP 400; received ${result.response.status}: ` +
+              JSON.stringify(result.body),
+          );
+          assert.equal(result.body.error, "Request body is not valid JSON");
+
+          assert.deepEqual(
+            await readMissionMutationSnapshot(),
+            before,
+          );
         },
       );
 
@@ -1118,6 +1219,59 @@ test(
             .eq("message_id", lowBatteryEventId);
           requireData(countResult, "count duplicate robot events");
           assert.equal(countResult.count, 1);
+        },
+      );
+
+      await t.test(
+        "rejects an eventId reused with different event content without a transition",
+        async () => {
+          const before = await readMissionMutationSnapshot();
+
+          const rejected = await expectStatus(
+            actionBody("events", {
+              schemaVersion: 1,
+              eventId: lowBatteryEventId,
+              robotId: TEST_ROBOT_ID,
+              deliveryId,
+              commandId,
+              type: "MISSION_STARTED",
+              severity: "INFO",
+              at: new Date().toISOString(),
+              payload: { source: "event-id-conflict-regression" },
+            }),
+            409,
+          );
+          assert.match(
+            rejected.error,
+            /event ID is already used by different event content/i,
+          );
+
+          const events = requireData(
+            await admin
+              .from("robot_events")
+              .select(
+                "robot_id, delivery_id, command_id, event_type, severity, payload",
+              )
+              .eq("message_id", lowBatteryEventId),
+            "read event after conflicting eventId",
+          );
+          assert.equal(events.length, 1);
+          assert.deepEqual(events[0], {
+            robot_id: TEST_ROBOT_ID,
+            delivery_id: deliveryId,
+            command_id: commandId,
+            event_type: "LOW_BATTERY",
+            severity: "WARNING",
+            payload: {
+              battery: 17,
+              source: "integration-test",
+            },
+          });
+
+          assert.deepEqual(
+            await readMissionMutationSnapshot(),
+            before,
+          );
         },
       );
 

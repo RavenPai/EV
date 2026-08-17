@@ -32,9 +32,10 @@ device identifiers into this file, Git, screenshots, SQL results, or logs.
   temporary-test cleanup remains. L7 is complete: its verified connector,
   POST path/body/header, ordered retry/buffer settings, metrics, and all four
   message branches have live evidence. L8 passes its safe allow/deny
-  regression. L9 is partially complete
-  through dispatch, ACK, state, and one non-mission event; event-driven delivery
-  progression and invalid/replay cases remain. L10-L21 remain not started.
+  regression. L9 is partially complete through dispatch, ACK, state, one
+  non-mission event, the local invalid/replay matrix, and a rollback-only hosted
+  database regression. One fresh linked event through the real MQTT action and
+  temporary-resource cleanup remain. L10-L21 remain not started.
   See each step below for exact evidence and gaps.
 - The ESP32 firmware source (`MIIT_Rover_ESP32_Firmware_v0.2.0/`) now exists
   in the repository, and `MIIT_ENABLE_MOTOR_OUTPUTS` was set to `1` on
@@ -244,11 +245,13 @@ Status 2026-07-22: complete.
 
 ### Step L6 — Repair and verify EMQX command publication
 
-Status 2026-07-24: the isolated application path is functionally complete. A
-replacement Deployment API credential is active in Supabase; live non-physical
-tests covered delivered/acknowledged and no-subscriber outcomes, while local
-tests cover ambiguous timeout/5xx classification and database reconciliation.
-The remaining L6 work is replacement-key rotation and temporary-test cleanup.
+Status 2026-07-25: the isolated application path and the required second
+credential rotation are functionally verified. The newly stored Deployment API
+credential passed authenticated client lookup and a safe non-robot publish.
+Live non-physical tests cover delivered/acknowledged and no-subscriber outcomes,
+while local tests cover ambiguous timeout/5xx classification and database
+reconciliation. Revoke the superseded credential to close L6; temporary test
+cleanup remains intentionally coupled to L9 evidence retention.
 
 - [x] Verify that a Deployment API App ID/App Secret (not a robot MQTT login)
   authenticates to the Broker Deployment API.
@@ -265,10 +268,17 @@ The remaining L6 work is replacement-key rotation and temporary-test cleanup.
 - [x] In the EMQX Cloud console, delete the retired Deployment API credential
   after retaining the replacement-key evidence. Do not change
   `ROBOT_INGEST_SECRET` for this rotation.
-- [ ] Before production, rotate the currently active Deployment API credential
-  once more because its value was shared during setup. Update the two Supabase
-  server-side secrets, verify a safe publish, and then delete the superseded
-  credential without recording either value.
+- [x] Before production, create another Deployment API credential because the
+  formerly active value was shared during setup, then update only
+  `EMQX_API_KEY` and `EMQX_API_SECRET` in Supabase without recording either
+  value.
+- [x] Verify the newly stored credential with a short-lived, token-protected
+  server-side probe. Authenticated client lookup returned HTTP 200 and a random
+  non-robot QoS 1, non-retained publish returned HTTP 202
+  `no_matching_subscribers`. The temporary function and probe token were then
+  removed.
+- [ ] Delete the superseded Deployment API credential in EMQX, retaining only
+  the newly verified key. Do not change `ROBOT_INGEST_SECRET`.
 - [x] Record the Serverless limitation: Deployment API keys have full access
   and cannot be permission-scoped. Mitigate it with server-only Supabase
   secrets, rotation, no logs/screenshots, and a move to a plan with scoped
@@ -560,15 +570,49 @@ Status 2026-07-24: partially complete.
   database-backed notifications. It did not advance a delivery.
 - [x] The same isolated path recorded both HTTP 200 with a subscriber and HTTP
   202 after the subscriber stopped. Timeout/5xx behavior is covered locally.
-- [ ] Send a controlled linked event through the real action and prove
-  event-driven delivery advancement.
-- [ ] Complete the duplicate, expired, malformed, wrong-robot, bad-secret,
-  forbidden-topic, stale-state, replay-conflict, and impossible-transition
-  cases against the isolated stack.
-- [ ] Retain redacted evidence, then remove the temporary MQTT identity, test
-  robot, and test delivery records.
-- Physical Pi truth checks must use real retained broker/Supabase evidence and
-  must not fabricate online, idle, sensor, ACK, or mission-state data.
+- [x] Add the guarded `robot-pi/l9_lifecycle_probe.py` one-shot publisher and
+  `robot-pi/l9_workflow_simulator.py` live workflow runner. Both are hard-locked
+  to `robot-test-l6`, accept the MQTT password only through the environment,
+  publish QoS 1 without retain, and cannot address a physical robot or command
+  topic. The workflow runner supplies readiness, waits for one fresh
+  `START_MISSION`, ACKs it, and immediately publishes its linked
+  `MISSION_STARTED`. It requires the exact expected delivery UUID, the exact
+  authorized test Client ID, a command no more than 30 seconds old with at
+  least 30 seconds remaining, broker acknowledgement of readiness and all
+  linked publications, a deterministic event ID, and a newer BUSY/AUTO state.
+  Eleven focused tests bring the Pi suite to 44. The secret-free runner source
+  is staged in the Pi operator directory and its offline self-test passes; no
+  live MQTT message was sent during staging.
+- [x] Complete the disposable local invalid-input/replay matrix. The current
+  gate passes 191 pgTAP checks and 17 HTTP subtests, including bad secret,
+  malformed body, unsupported topic, wrong identity, stale state, duplicate,
+  conflicting event-ID reuse, expired evidence, and impossible transitions.
+- [x] Run a rollback-only regression against the hosted database. It exercised
+  authenticated REQUESTED → APPROVED → ASSIGNED setup, invalid ordering, valid
+  `MISSION_STARTED`, exact replay, conflicting replay, and an impossible
+  transition. It passed and a follow-up query confirmed zero persistent fixture
+  rows.
+- [x] Send a controlled linked event through the real action and prove
+  event-driven delivery advancement. A fresh exact-delivery run received one
+  `START_MISSION`, published its ACK, deterministic `MISSION_STARTED`, and newer
+  BUSY/AUTO state, and received broker PUBACKs for all three. Supabase recorded
+  the command as `ACKNOWLEDGED`, advanced the delivery to `TO_SOURCE` at
+  progress 28, stored exactly one linked mission-start event, linked the robot
+  to the delivery, and generated database-backed notifications. The runner's
+  retained offline shutdown then arrived truthfully.
+- [x] Retain this redacted evidence and remove the temporary database fixtures
+  and Pi operator copies. Follow-up counts confirmed zero `robot-test-l6`
+  robot, delivery, command, event, or matching notification rows; the temporary
+  Pi runner directory and private broker-host file were also removed.
+- [ ] Remove the `robot-test-l6` MQTT authentication user and
+  `robot-test-l6-subscriber` Client-ID authorization entry in EMQX. Preserve the
+  All Users deny fallback, physical-robot ACL, production connector, rule, and
+  action.
+- [x] Retain a current read-only physical truth check without a control command:
+  the Pi service is active with no restart loop and Supabase receives fresh
+  bridge heartbeats. `robot-01` still has no telemetry timestamp and correctly
+  remains `OFFLINE`; this is not mission-readiness evidence and P3–P5 remain
+  separate Pi gates.
 
 ### Step L10 — Redeploy and smoke-test the Cloudflare frontend
 
